@@ -55,10 +55,13 @@ def quantize_kmeans_lab(
 
 
 def smooth_cluster_map(
-    cluster_id_raw: np.ndarray,
-    palette_colors: List[Tuple[int, int, int]],
-    image_long_px: int,
-    print_long_mm: float = 420.0,
+    cluster_id_raw,
+    palette_colors,
+    image_long_px,
+    print_long_mm,
+    min_feature_mm,
+    area_factor,
+    max_effective_dpi,
 ) -> Tuple[np.ndarray, List[Tuple[int, int, int]]]:
     """
     Smooth the cluster map with a radius linked to physical print size
@@ -67,12 +70,13 @@ def smooth_cluster_map(
     num_initial_colors = len(palette_colors)
 
     radius = estimate_smoothing_radius_px(
-        image_long_px=image_long_px,
-        print_long_mm=print_long_mm,
-        min_feature_mm=2.0,
-        oversample=0.5,
-        max_effective_dpi=250,
-    )
+    image_long_px=image_long_px,
+    print_long_mm=print_long_mm,
+    min_feature_mm=min_feature_mm,
+    oversample=0.5,
+    max_effective_dpi=max_effective_dpi,
+)
+
     print(f"[2] Smoothing window radius: {radius} pixels for {print_long_mm:.0f} mm long side")
 
     cluster_id_smoothed = smooth_labels_radius(

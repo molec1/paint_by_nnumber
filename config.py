@@ -3,8 +3,10 @@ from __future__ import annotations
 from typing import List, Tuple
 
 # Default processing parameters
-NUM_COLORS: int = 20           # number of colors after quantization
-DEFAULT_MIN_REGION_PIXELS: int = 150  # fallback if we don't estimate automatically
+DEFAULT_NUM_COLORS = 20
+DEFAULT_MIN_FEATURE_MM = 2.0      # minimal paintable feature size
+DEFAULT_AREA_FACTOR = 4.0         # relates feature size to pixel area
+DEFAULT_MAX_EFFECTIVE_DPI = 250
 LINE_THICKNESS_PX: int = 1     # contour thickness in pixels
 
 # Connectivity: 4-connected (True) or 8-connected (False)

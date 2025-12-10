@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict, Optional
+from typing import Dict
 
 import numpy as np
 from PIL import Image
 
 from config import (
-    NUM_COLORS,
+    DEFAULT_NUM_COLORS,
+    DEFAULT_MIN_FEATURE_MM,
+    DEFAULT_AREA_FACTOR,
+    DEFAULT_MAX_EFFECTIVE_DPI,
     LINE_THICKNESS_PX,
     get_paper_long_side_mm,
 )
@@ -50,11 +53,13 @@ def build_output_paths(input_path: str) -> Dict[str, str]:
 
 def main(
     input_path: str,
-    min_region_pixels: Optional[int] = None,
-    num_colors: int = NUM_COLORS,
-    line_thickness_px: int = LINE_THICKNESS_PX,
     paper_size: str = "A3",
+    num_colors: int = DEFAULT_NUM_COLORS,
+    min_feature_mm: float = DEFAULT_MIN_FEATURE_MM,
+    area_factor: float = DEFAULT_AREA_FACTOR,
+    line_thickness_px: int = LINE_THICKNESS_PX,
 ) -> None:
+
     """
     End-to-end pipeline for building a paint-by-numbers booklet:
 
@@ -82,14 +87,14 @@ def main(
     image_long_px = max(H, W)
     print(f"[0] Input: {input_path}, size: {W}x{H}")
 
-    if min_region_pixels is None:
-        min_region_pixels = estimate_min_region_pixels(
-            image_long_px=image_long_px,
-            print_long_mm=print_long_mm,
-            min_feature_mm=2.0,
-            area_factor=4.0,
-            max_effective_dpi=250,
-        )
+    min_region_pixels = estimate_min_region_pixels(
+        image_long_px=image_long_px,
+        print_long_mm=print_long_mm,
+        min_feature_mm=min_feature_mm,
+        area_factor=area_factor,
+        max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI,
+    )
+
     print(f"[0] MIN_REGION_PIXELS: {min_region_pixels}")
 
     # 2. Quantization
@@ -111,7 +116,11 @@ def main(
         palette_colors,
         image_long_px=image_long_px,
         print_long_mm=print_long_mm,
+        min_feature_mm=min_feature_mm,
+        area_factor=area_factor,
+        max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI,
     )
+
     print(f"[3] Cluster map smoothing ({time.perf_counter() - t:.2f}s)")
     print(f"    Colors after smoothing: {len(palette_final)}")
 

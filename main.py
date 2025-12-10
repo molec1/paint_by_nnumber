@@ -23,4 +23,9 @@ if __name__ == "__main__":
     else:
         paper_size = "A3"
 
-    main(input_path, paper_size=paper_size)
+    if len(sys.argv) > 3:
+        min_feature_mm = sys.argv[3]
+    else:
+        min_feature_mm = 2.
+
+    main(input_path, paper_size=paper_size, min_feature_mm=min_feature_mm)
