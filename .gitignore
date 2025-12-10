@@ -1,0 +1,25 @@
+# Python venv
+venv/
+.env/
+#__pycache__/
+
+# Python cache
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Project output directory
+output/
+
+# temp render/debug work
+*.tmp
+*.log
+
+# IDEs
+.idea/
+.vscode/

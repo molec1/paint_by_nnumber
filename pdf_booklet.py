@@ -171,7 +171,7 @@ def build_pbn_pdf_booklet(
          - bottom: palette tiles with names.
     """
     if pdf_name is None:
-        pdf_name = f"{root}_booklet.pdf"
+        pdf_name = f"output/{root}_booklet.pdf"
 
     # ------- Page 1: A3 outline only -------
     outline_img = ImageReader(outline_path)

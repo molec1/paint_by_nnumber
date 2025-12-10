@@ -1,0 +1,6 @@
+numpy>=1.21
+Pillow>=10.0
+scikit-learn>=1.0
+reportlab>=3.6
+webcolors>=1.11
+

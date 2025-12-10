@@ -29,6 +29,7 @@ from palette_utils import (
 from rendering import render_outline_and_colored, draw_numbers_on_outline
 from pdf_booklet import build_pbn_pdf_booklet
 
+out_dir = "output"
 
 def build_output_paths(input_path: str) -> Dict[str, str]:
     """
@@ -39,11 +40,11 @@ def build_output_paths(input_path: str) -> Dict[str, str]:
         ext = ".png"
 
     return {
-        "quant": f"{root}_quantized{ext}",
-        "outline": f"{root}_pbn_outline{ext}",
-        "colored": f"{root}_pbn_colored{ext}",
-        "palette_csv": f"{root}_palette.csv",
-        "palette_img": f"{root}_palette.png",
+        "quant": f"{out_dir}/{root}_quantized{ext}",
+        "outline": f"{out_dir}/{root}_pbn_outline{ext}",
+        "colored": f"{out_dir}/{root}_pbn_colored{ext}",
+        "palette_csv": f"{out_dir}/{root}_palette.csv",
+        "palette_img": f"{out_dir}/{root}_palette.png",
     }
 
 
