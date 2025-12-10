@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Dict
 
 import numpy as np
 from PIL import Image
@@ -32,23 +31,29 @@ from palette_utils import (
 from rendering import render_outline_and_colored, draw_numbers_on_outline
 from pdf_booklet import build_pbn_pdf_booklet
 
-out_dir = "output"
+from pathlib import Path
 
-def build_output_paths(input_path: str) -> Dict[str, str]:
+def build_output_paths(input_path: str, output_dir: str = "output") -> dict:
     """
-    Build output file paths based on input filename.
+    Generate output paths under output_dir.
+    Takes only filename, not full directory path.
     """
-    root, ext = os.path.splitext(input_path)
-    if not ext:
-        ext = ".png"
+    p = Path(input_path)
+    base = p.stem      # "UAY_6763-002"
+    ext = p.suffix     # ".jpg" or ".png"
+
+    out = Path(output_dir)
+    out.mkdir(exist_ok=True)
 
     return {
-        "quant": f"{out_dir}/{root}_quantized{ext}",
-        "outline": f"{out_dir}/{root}_pbn_outline{ext}",
-        "colored": f"{out_dir}/{root}_pbn_colored{ext}",
-        "palette_csv": f"{out_dir}/{root}_palette.csv",
-        "palette_img": f"{out_dir}/{root}_palette.png",
+        "quant": out / f"{base}_quantized{ext}",
+        "outline": out / f"{base}_pbn_outline{ext}",
+        "colored": out / f"{base}_pbn_colored{ext}",
+        "palette_csv": out / f"{base}_palette.csv",
+        "palette_img": out / f"{base}_palette.png",
+        "pdf": str(out / f"{base}_booklet.pdf"),
     }
+
 
 
 def main(
@@ -216,6 +221,7 @@ def main(
         original_path=input_path,
         outline_path=paths["outline"],
         palette_csv_path=paths["palette_csv"],
+        pdf_name=paths['pdf'],
     )
     print(f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s)")
 

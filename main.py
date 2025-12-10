@@ -24,8 +24,13 @@ if __name__ == "__main__":
         paper_size = "A3"
 
     if len(sys.argv) > 3:
-        min_feature_mm = sys.argv[3]
+        min_feature_mm = float(sys.argv[3])
     else:
         min_feature_mm = 2.
 
-    main(input_path, paper_size=paper_size, min_feature_mm=min_feature_mm)
+    if len(sys.argv) > 4:
+        num_colors = int(sys.argv[4])
+    else:
+        num_colors = 20
+
+    main(input_path, paper_size=paper_size, min_feature_mm=min_feature_mm, num_colors=num_colors)
