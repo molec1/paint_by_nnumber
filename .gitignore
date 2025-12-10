@@ -1,7 +1,7 @@
 # Python venv
 venv/
 .env/
-#__pycache__/
+__pycache__/
 
 # Python cache
 *.pyc
