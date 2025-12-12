@@ -7,7 +7,9 @@ DEFAULT_NUM_COLORS = 20
 DEFAULT_MIN_FEATURE_MM = 2.0      # minimal paintable feature size
 DEFAULT_AREA_FACTOR = 4.0         # relates feature size to pixel area
 DEFAULT_MAX_EFFECTIVE_DPI = 250
+DEFAULT_RANDOM_SEED = 42
 LINE_THICKNESS_PX: int = 1     # contour thickness in pixels
+TARGET_NUMBER_HEIGHT_MM = 3.0  # Target physical height for numbers on paper (in mm)
 
 # Connectivity: 4-connected (True) or 8-connected (False)
 CONNECTIVITY4: bool = True

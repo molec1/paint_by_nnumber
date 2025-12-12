@@ -93,15 +93,15 @@ def draw_numbers_on_outline(
     outline_img: Image.Image,
     final_regions: List[Dict],
     color_id_to_paint_index: Dict[int, int],
-    font_size: int = 28,
+    font_size: int,
+    min_feature_px: float,
 ) -> None:
     """
-    Draw color numbers inside regions, trying to keep text within the area.
+    Draw exactly one color number per region (if region is large enough).
 
-    Parameters
-    ----------
-    font_size : int
-        Base font size in pixels (28 is about +30% compared to previous 22).
+    - Uses dynamic font_size (in px).
+    - Places the number inside region using the region mask.
+    - Has hard limits on search radius and step to avoid huge runtimes.
     """
     W, H = outline_img.size
     draw = ImageDraw.Draw(outline_img)
@@ -111,7 +111,6 @@ def draw_numbers_on_outline(
     except OSError:
         font = ImageFont.load_default()
 
-
     for reg in final_regions:
         cid = reg["color_id"]
         if cid not in color_id_to_paint_index:
@@ -120,10 +119,14 @@ def draw_numbers_on_outline(
         number = color_id_to_paint_index[cid]
         text = str(number)
 
-        # Measure text size
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
+        # размер текста
+        bbox_text = draw.textbbox((0, 0), text, font=font)
+        tw = bbox_text[2] - bbox_text[0]
+        th = bbox_text[3] - bbox_text[1]
+
+        # если область меньше текста — пропускаем
+        if reg["area"] < tw * th * 1.2:
+            continue
 
         cx = reg["cx"]
         cy = reg["cy"]
@@ -132,54 +135,84 @@ def draw_numbers_on_outline(
         H_loc = max_y - min_y + 1
         W_loc = max_x - min_x + 1
 
-        # Local mask
+        # локальная маска области
         local_mask = np.zeros((H_loc, W_loc), dtype=bool)
         for (yy, xx) in reg["pixels"]:
             local_mask[yy - min_y, xx - min_x] = True
 
-        # Desired centre in local coordinates
+        # целевой центр в локальных координатах
         cx_loc = cx - min_x
         cy_loc = cy - min_y
 
         best_pos = None
 
-        # Search radius for candidate positions around centroid
-        max_radius = max(10, min(H_loc, W_loc) // 3)
+        # отступ от границы области внутрь
+        inner_margin = max(1, font_size // 6)
 
-        for radius in range(max_radius + 1):
+        # ограничения на поиск
+        # не больше 20% диагонали области, но и не больше 80 пикселей
+        max_dim = max(H_loc, W_loc)
+        max_radius = int(min(max_dim * 0.2, 80))
+
+        # шаг по сетке
+        step = max(1, font_size // 3)
+
+        for radius in range(0, max_radius + 1, step):
             found = False
-            for dy in range(-radius, radius + 1):
-                for dx in range(-radius, radius + 1):
+            # грубая квадратная окрестность
+            for dy in range(-radius, radius + 1, step):
+                for dx in range(-radius, radius + 1, step):
                     cxx = cx_loc + dx
                     cyy = cy_loc + dy
 
                     tx_loc = cxx - tw // 2
                     ty_loc = cyy - th // 2
 
+                    # текст должен помещаться в локальный bbox
                     if tx_loc < 0 or ty_loc < 0:
                         continue
                     if tx_loc + tw > W_loc or ty_loc + th > H_loc:
                         continue
 
-                    submask = local_mask[ty_loc : ty_loc + th, tx_loc : tx_loc + tw]
-                    if submask.all():
-                        tx = min_x + tx_loc
-                        ty = min_y + ty_loc
-                        best_pos = (tx, ty)
-                        found = True
-                        break
+                    # внутренний прямоугольник с отступами
+                    ix0 = tx_loc + inner_margin
+                    iy0 = ty_loc + inner_margin
+                    ix1 = tx_loc + tw - inner_margin
+                    iy1 = ty_loc + th - inner_margin
+
+                    if ix1 <= ix0 or iy1 <= iy0:
+                        ix0, iy0 = tx_loc, ty_loc
+                        ix1, iy1 = tx_loc + tw, ty_loc + th
+
+                    if ix0 < 0 or iy0 < 0 or ix1 > W_loc or iy1 > H_loc:
+                        continue
+
+                    submask = local_mask[iy0:iy1, ix0:ix1]
+                    if submask.size == 0:
+                        continue
+
+                    # требуем, чтобы большая часть текста была внутри области
+                    if submask.mean() < 0.97:
+                        continue
+
+                    # переводим в глобальные координаты
+                    tx = min_x + tx_loc
+                    ty = min_y + ty_loc
+                    best_pos = (tx, ty)
+                    found = True
+                    break
                 if found:
                     break
             if found:
                 break
 
-        if best_pos is not None:
-            tx, ty = best_pos
-        else:
-            # Fallback: just centre within the image and clamp.
+        if best_pos is None:
+            # fallback: просто центрируем, но зажимаем внутрь картинки
             tx = cx - tw // 2
             ty = cy - th // 2
             tx = max(0, min(W - tw, tx))
             ty = max(0, min(H - th, ty))
+        else:
+            tx, ty = best_pos
 
         draw.text((tx, ty), text, fill=(0, 0, 0), font=font)
