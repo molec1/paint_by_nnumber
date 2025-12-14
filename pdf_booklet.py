@@ -4,7 +4,7 @@ import csv
 from typing import Tuple
 
 import webcolors
-from reportlab.lib.pagesizes import A3, A4, landscape, portrait
+from reportlab.lib.pagesizes import A1, A2, A3, A4, A5, landscape, portrait
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
@@ -161,6 +161,7 @@ def build_pbn_pdf_booklet(
     outline_path: str,
     palette_csv_path: str,
     pdf_name: str | None = None,
+    paper_size: str = 'A3'
 ) -> None:
     """
     Build a 2-page PDF:
@@ -176,11 +177,18 @@ def build_pbn_pdf_booklet(
     # ------- Page 1: A3 outline only -------
     outline_img = ImageReader(outline_path)
     ow, oh = outline_img.getSize()
+    
+    size_dict = {
+        'A1': A1,
+        'A2': A2,
+        'A3': A3,
+        'A4': A4,
+        'A5': A5,}
 
     if ow >= oh:
-        page1_size = landscape(A3)
+        page1_size = landscape(size_dict[paper_size])
     else:
-        page1_size = portrait(A3)
+        page1_size = portrait(size_dict[paper_size])
 
     c = canvas.Canvas(pdf_name, pagesize=page1_size)
     W1, H1 = page1_size

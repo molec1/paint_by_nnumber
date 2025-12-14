@@ -300,11 +300,11 @@ def main(
     )
     print(f"[7b] After hard cleanup: final regions {len(final_regions_hard)}")
     
-    analyze_final_regions(
+    '''analyze_final_regions(
         final_regions_hard,
         print_long_mm=print_long_mm,
         image_long_px=image_long_px,
-    )
+    )'''
     
     # и дальше работаем уже с hard-результатом
     cluster_id_refined = cluster_id_hard
@@ -365,6 +365,7 @@ def main(
         outline_path=paths["outline"],
         palette_csv_path=paths["palette_csv"],
         pdf_name=paths['pdf'],
+        paper_size=paper_size,
     )
     print(f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s)")
 

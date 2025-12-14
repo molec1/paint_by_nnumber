@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 
-
 def estimate_smoothing_radius_px(
     image_long_px: int,
     print_long_mm: float = 420.0,
@@ -144,3 +143,4 @@ def estimate_min_region_pixels(
 
     area = area_factor * (min_feature_px ** 2)
     return max(1, int(round(area)))
+
