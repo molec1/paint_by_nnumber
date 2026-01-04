@@ -11,7 +11,6 @@ from config import (
     DEFAULT_MIN_FEATURE_MM,
     DEFAULT_AREA_FACTOR,
     DEFAULT_MAX_EFFECTIVE_DPI,
-    LINE_THICKNESS_PX,
     TARGET_NUMBER_HEIGHT_MM,
     DEFAULT_RANDOM_SEED,
     get_paper_long_side_mm,
@@ -30,7 +29,7 @@ from palette_utils import (
     build_ordered_palette,
     save_palette_csv,
 )
-from rendering import render_outline_and_colored, draw_numbers_on_outline
+from rendering import render_outline_and_colored_highres, draw_numbers_on_outline_highres
 from pdf_booklet import build_pbn_pdf_booklet
 
 from pathlib import Path
@@ -164,7 +163,6 @@ def main(
     num_colors: int = DEFAULT_NUM_COLORS,
     min_feature_mm: float = DEFAULT_MIN_FEATURE_MM,
     area_factor: float = DEFAULT_AREA_FACTOR,
-    line_thickness_px: int = LINE_THICKNESS_PX,
     random_seed: int = DEFAULT_RANDOM_SEED,
 ) -> None:
 
@@ -189,8 +187,6 @@ def main(
     paths = build_output_paths(input_path)
 
     # 0. Target paper size
-    print_long_mm = get_paper_long_side_mm(paper_size)
-    # 0. Target paper
     print_long_mm = get_paper_long_side_mm(paper_size)
     print(
         f"[0] Target paper: {paper_size} (long ≈ {print_long_mm:.0f} mm), "
@@ -242,6 +238,7 @@ def main(
         min_feature_mm=min_feature_mm,
         area_factor=area_factor,
         max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI,
+        orig_arr=orig_arr,
     )
 
     print(f"[3] Cluster map smoothing ({time.perf_counter() - t:.2f}s)")
@@ -300,13 +297,6 @@ def main(
     )
     print(f"[7b] After hard cleanup: final regions {len(final_regions_hard)}")
     
-    '''analyze_final_regions(
-        final_regions_hard,
-        print_long_mm=print_long_mm,
-        image_long_px=image_long_px,
-    )'''
-    
-    # и дальше работаем уже с hard-результатом
     cluster_id_refined = cluster_id_hard
     palette_refined = palette_hard
     final_regions = final_regions_hard
@@ -319,39 +309,37 @@ def main(
         f"({time.perf_counter() - t:.2f}s)"
     )
 
-    # 9. Rendering images
-    t = time.perf_counter()
-    outline_img, colored_img = render_outline_and_colored(
-        final_regions,
+    DPI = 300
+    target_long_px = int(round(DPI * (print_long_mm / 25.4)))
+    print(f"[9] Target render long side: {target_long_px}px (@{DPI} dpi)")
+    
+    outline_img, colored_img, labels_big, scale_render = render_outline_and_colored_highres(
+        cluster_id_refined, 
         palette_refined,
         color_id_to_paint_index,
-        line_thickness_px,
-        size=(orig_arr.shape[0], orig_arr.shape[1]),
+        target_long_px=target_long_px,
     )
-
-
-    # compute font size in pixels so that text on paper is ~3 mm high
-    font_size_px = estimate_font_size_px_for_print(
-        image_long_px=image_long_px,
+    
+    # font size so that height on paper ~ TARGET_NUMBER_HEIGHT_MM
+    font_size_px_hi = estimate_font_size_px_for_print(
+        image_long_px=target_long_px,
         print_long_mm=print_long_mm,
     )
-    print(f"[9] Number font size: {font_size_px}px (target ~{TARGET_NUMBER_HEIGHT_MM} mm)")
-
-    mm_per_px = print_long_mm / float(image_long_px)    
-    min_feature_px = min_feature_mm / mm_per_px
-    draw_numbers_on_outline(
+    print(f"[9] Number font size (hi-res): {font_size_px_hi}px")
+    
+    draw_numbers_on_outline_highres(
         outline_img,
         final_regions,
+        labels_big,
         color_id_to_paint_index,
-        font_size=font_size_px,
-        min_feature_px=min_feature_px,
+        font_size=font_size_px_hi,
+        scale=scale_render,
     )
-    outline_img.save(paths["outline"])
-    colored_img.save(paths["colored"])
-    print(
-        f"[9] Render images -> {paths['outline']}, {paths['colored']} "
-        f"({time.perf_counter() - t:.2f}s)"
-    )
+    
+    outline_img.save(paths["outline"], dpi=(DPI, DPI))
+    colored_img.save(paths["colored"], dpi=(DPI, DPI))
+    
+    print(f"[9] Rendering ({time.perf_counter() - t:.2f}s)")
 
     save_palette_csv(paths["palette_csv"], paint_palette)
     t = time.perf_counter()

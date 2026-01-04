@@ -319,10 +319,10 @@ def merge_small_regions_with_fallback(
                     best_dist = dist
                     best_target_region_id = bid
         else:
-            # fallback: нет ни одного big-соседа
-            # берём всех соседей (big+small), выбираем с максимальной площадью
+            # fallback: there is no one big neigh
+            # get the biggets neigh
             neighbour_ids = set()
-            # обходим пиксели региона и собираем соседей
+            # go through ebvery possibel neigh
             for (yy, xx) in reg_small["pixels"]:
                 for dy, dx in NEIGHBORS:
                     ny, nx = yy + dy, xx + dx
@@ -338,8 +338,6 @@ def merge_small_regions_with_fallback(
                 )
 
         if best_target_region_id is None:
-            # совсем одиночный пиксель без соседей (теоретически не должен случаться,
-            # но оставим защиту)
             continue
 
         target_cid = regions[best_target_region_id]["color_id"]
@@ -383,12 +381,8 @@ def hard_cleanup_tiny_regions(
             # nothing left to clean
             break
 
-        # Важно: даже если big_ids пустой (все маленькие), всё равно строим
-        # соседства и будем сливать маленькие в "самый большой сосед".
         adj = build_adjacency_small_to_big(region_id_img, big_ids, small_ids)
 
-        # fallback: если у маленького нет big-соседа, будем сливать в
-        # "наиболее крупного любого соседа". Для этого слегка расширим merge.
         current_map, current_palette = merge_small_regions_with_fallback(
             current_map,
             regions,
@@ -398,6 +392,5 @@ def hard_cleanup_tiny_regions(
             adj,
         )
 
-    # финальная сегментация
     final_regions = segment_final_regions(current_map)
     return current_map, current_palette, final_regions
