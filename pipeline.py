@@ -4,7 +4,7 @@ import os
 import time
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from config import (
     DEFAULT_NUM_COLORS,
@@ -18,10 +18,10 @@ from config import (
 from quantization import quantize_kmeans_lab, smooth_cluster_map
 from smoothing import estimate_min_region_pixels
 from segmentation import (
-    segment_regions,
+    segment_regions_scipy,
     split_big_small_regions,
     build_adjacency_small_to_big,
-    merge_small_regions,
+    merge_small_regions_scipy,
     clean_small_final_regions,
     hard_cleanup_tiny_regions,
 )
@@ -194,7 +194,8 @@ def main(
     )
 
     # 1. Load and possibly resize image
-    orig_img = Image.open(input_path).convert("RGB")
+    orig_img = Image.open(input_path)
+    orig_img = ImageOps.exif_transpose(orig_img).convert("RGB")
     orig_img_resized, scale = resize_for_print(
         orig_img,
         print_long_mm=print_long_mm,
@@ -246,31 +247,23 @@ def main(
 
     # 4. First segmentation
     t = time.perf_counter()
-    regions, region_id_img = segment_regions(cluster_id_img)
+    region_id_img, region_color_id, region_area = segment_regions_scipy(cluster_id_img)
     print(
-        f"[4] First segmentation: total regions {len(regions)} "
+        f"[4] First segmentation: total regions {len(region_color_id)} "
         f"({time.perf_counter() - t:.2f}s)"
     )
 
     # 5. Split big/small
-    big_region_ids, small_region_ids = split_big_small_regions(
-        regions, min_region_pixels
-    )
-    print(f"[5] Big regions:   {len(big_region_ids)}")
-    print(f"    Small regions: {len(small_region_ids)}")
 
     # 6. Neighbour graph & merge small regions
     t = time.perf_counter()
-    adj_small_to_big = build_adjacency_small_to_big(
-        region_id_img, big_region_ids, small_region_ids
-    )
-    cluster_id_final, palette_merged = merge_small_regions(
-        cluster_id_img,
-        regions,
-        palette_final,
-        big_region_ids,
-        small_region_ids,
-        adj_small_to_big,
+    cluster_id_final, palette_merged = merge_small_regions_scipy(
+        region_id_img=region_id_img,
+        region_color_id=region_color_id,
+        region_area=region_area,
+        palette=palette_final,
+        min_region_pixels=min_region_pixels,
+        allow_fallback=True,
     )
     print(
         f"[6] Merge small regions ({time.perf_counter() - t:.2f}s)"

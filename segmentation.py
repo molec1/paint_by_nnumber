@@ -1,63 +1,95 @@
 from __future__ import annotations
 
-from collections import deque
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
+from scipy import ndimage as ndi
 
-from config import NEIGHBORS
+from config import NEIGHBORS, CONNECTIVITY4
 
 
-def segment_regions(cluster_id_img: np.ndarray) -> Tuple[List[Dict], np.ndarray]:
+def segment_regions_scipy(cluster_id_img: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    First segmentation pass: connected components by color ID.
+    Connected components by color id using SciPy (fast, no Python BFS).
 
     Returns
     -------
-    regions : list of dict
-        Each region has keys: id, color_id, pixels, area.
-    region_id_img : np.ndarray
-        2D map of region IDs with same shape as cluster_id_img.
+    region_id_img : (H, W) int32
+        Region id per pixel, 0..R-1.
+    region_color_id : (R,) int32
+        Color id (cluster) for each region.
+    region_area : (R,) int32
+        Pixel area per region.
     """
     H, W = cluster_id_img.shape
-    visited = np.zeros((H, W), dtype=bool)
+    structure = ndi.generate_binary_structure(2, 1 if CONNECTIVITY4 else 2)
+
     region_id_img = -np.ones((H, W), dtype=np.int32)
-    regions: List[Dict] = []
+    region_color_id: list[int] = []
+    region_area: list[int] = []
 
-    for y0 in range(H):
-        for x0 in range(W):
-            if visited[y0, x0]:
-                continue
+    offset = 0
+    # iterate only colors that actually exist
+    for cid in np.unique(cluster_id_img):
+        mask = (cluster_id_img == cid)
+        if not mask.any():
+            continue
 
-            cid = int(cluster_id_img[y0, x0])
-            visited[y0, x0] = True
+        labeled, n = ndi.label(mask, structure=structure)
+        if n == 0:
+            continue
 
-            region_idx = len(regions)
-            queue = deque([(y0, x0)])
-            pixels = []
+        # areas: bincount over labeled (0 is background)
+        areas = np.bincount(labeled.ravel())[1:].astype(np.int32)
 
-            while queue:
-                y, x = queue.popleft()
-                pixels.append((y, x))
-                region_id_img[y, x] = region_idx
+        # map local labels 1..n -> global region ids offset..offset+n-1
+        rid = labeled.astype(np.int32)
+        rid[rid > 0] = (rid[rid > 0] - 1) + offset
 
-                for dy, dx in NEIGHBORS:
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < H and 0 <= nx < W and not visited[ny, nx]:
-                        if int(cluster_id_img[ny, nx]) == cid:
-                            visited[ny, nx] = True
-                            queue.append((ny, nx))
+        region_id_img[mask] = rid[mask]
 
-            regions.append(
-                {
-                    "id": region_idx,
-                    "color_id": cid,
-                    "pixels": pixels,
-                    "area": len(pixels),
-                }
-            )
+        region_color_id.extend([int(cid)] * n)
+        region_area.extend(areas.tolist())
+        offset += n
 
-    return regions, region_id_img
+    return region_id_img, np.asarray(region_color_id, dtype=np.int32), np.asarray(region_area, dtype=np.int32)
+
+
+def build_region_adjacency(region_id_img: np.ndarray, num_regions: int) -> list[set[int]]:
+    """
+    Build undirected region adjacency from region_id_img by scanning right/down borders.
+    """
+    adj: list[set[int]] = [set() for _ in range(num_regions)]
+    r = region_id_img
+
+    # right neighbors
+    a = r[:, :-1]
+    b = r[:, 1:]
+    m = (a != b) & (a >= 0) & (b >= 0)
+    p1 = np.stack([a[m], b[m]], axis=1) if m.any() else np.empty((0, 2), dtype=np.int32)
+
+    # down neighbors
+    a = r[:-1, :]
+    b = r[1:, :]
+    m = (a != b) & (a >= 0) & (b >= 0)
+    p2 = np.stack([a[m], b[m]], axis=1) if m.any() else np.empty((0, 2), dtype=np.int32)
+
+    pairs = np.vstack([p1, p2])
+    if pairs.size == 0:
+        return adj
+
+    # normalize ordering so (u,v) and (v,u) are the same before unique
+    pairs = np.sort(pairs, axis=1)
+    pairs = np.unique(pairs, axis=0)
+
+    for u, v in pairs:
+        uu = int(u); vv = int(v)
+        if uu != vv:
+            adj[uu].add(vv)
+            adj[vv].add(uu)
+
+    return adj
+
 
 
 def split_big_small_regions(
@@ -107,129 +139,115 @@ def build_adjacency_small_to_big(
     return adj_small_to_big
 
 
-def merge_small_regions(
-    cluster_id_img: np.ndarray,
-    regions: List[Dict],
-    palette: List[Tuple[int, int, int]],
-    big_region_ids: Set[int],
-    small_region_ids: Set[int],
-    adj_small_to_big: Dict[int, Set[int]],
-) -> Tuple[np.ndarray, List[Tuple[int, int, int]]]:
+def merge_small_regions_scipy(
+    region_id_img: np.ndarray,
+    region_color_id: np.ndarray,
+    region_area: np.ndarray,
+    palette: list[tuple[int, int, int]],
+    min_region_pixels: int,
+    allow_fallback: bool = True,
+) -> tuple[np.ndarray, list[tuple[int, int, int]]]:
     """
-    Merge small regions into neighbouring big ones, using color distance
-    in RGB space to choose the best target.
-
-    Returns
-    -------
-    cluster_id_final : np.ndarray
-        Map of color IDs after merging.
-    palette_final : list of (R, G, B)
-        Palette matching new IDs.
+    Merge regions smaller than min_region_pixels into neighbor regions.
+    Produces a new cluster_id map and compacted palette (0..K'-1).
     """
-    H, W = cluster_id_img.shape
-    cluster_id_mod = cluster_id_img.copy()
+    num_regions = int(region_area.shape[0])
+    adj = build_region_adjacency(region_id_img, num_regions)
 
-    for sid in small_region_ids:
-        reg_small = regions[sid]
-        small_cid = reg_small["color_id"]
-        small_color = np.array(palette[small_cid], dtype=np.int16)
+    big = region_area >= min_region_pixels
+    small_ids = np.flatnonzero(~big)
+    if small_ids.size == 0:
+        # already clean, just compact colors
+        cluster_id_mod = region_color_id[region_id_img]
+        final_cids, inv = np.unique(cluster_id_mod, return_inverse=True)
+        return inv.reshape(cluster_id_mod.shape), [palette[int(c)] for c in final_cids]
 
-        candidates = list(adj_small_to_big[sid])
+    pal = np.asarray(palette, dtype=np.int16)  # (K,3) for fast distance
+    region_to_cid = region_color_id.copy()
+
+    for sid in small_ids.tolist():
+        scid = int(region_to_cid[sid])
+        sclr = pal[scid]
+
+        neigh = adj[sid]
+        if not neigh:
+            continue
+
+        # prefer big neighbors
+        candidates = [nid for nid in neigh if big[nid]]
         if not candidates:
+            if not allow_fallback:
+                continue
+            # fallback: merge into the largest neighbor (big or small)
+            nid = max(neigh, key=lambda x: int(region_area[x]))
+            region_to_cid[sid] = int(region_to_cid[nid])
             continue
 
-        best_bid = None
-        best_dist = None
+        # pick closest-by-color big neighbor
+        cand_cids = region_to_cid[np.asarray(candidates, dtype=np.int32)]
+        cand_colors = pal[cand_cids]
+        d2 = np.sum((cand_colors - sclr) ** 2, axis=1)
+        best = candidates[int(np.argmin(d2))]
+        region_to_cid[sid] = int(region_to_cid[best])
 
-        for bid in candidates:
-            reg_big = regions[bid]
-            big_cid = reg_big["color_id"]
-            big_color = np.array(palette[big_cid], dtype=np.int16)
-            dist = np.sum((small_color - big_color) ** 2)
-            if best_dist is None or dist < best_dist:
-                best_dist = dist
-                best_bid = bid
+    # rebuild pixel map in one shot
+    cluster_id_mod = region_to_cid[region_id_img]
 
-        if best_bid is None:
-            continue
-
-        target_cid = regions[best_bid]["color_id"]
-
-        for (yy, xx) in reg_small["pixels"]:
-            cluster_id_mod[yy, xx] = target_cid
-
-    final_cids, inverse = np.unique(cluster_id_mod, axis=None, return_inverse=True)
-    cluster_id_final = inverse.reshape(H, W)
+    # compact palette to 0..K'-1
+    final_cids, inv = np.unique(cluster_id_mod, return_inverse=True)
+    cluster_id_final = inv.reshape(cluster_id_mod.shape)
     palette_final = [palette[int(c)] for c in final_cids]
-
     return cluster_id_final, palette_final
 
 
-def segment_final_regions(cluster_id_final: np.ndarray) -> List[Dict]:
+def segment_final_regions_scipy(cluster_id_final: np.ndarray) -> list[dict]:
     """
-    Second segmentation pass: final connected regions after all merges.
-
-    Each region dict includes:
-      - color_id
-      - pixels
-      - cx, cy : approximate centroid
-      - bbox   : (min_y, max_y, min_x, max_x)
-      - area   : number of pixels
+    Final connected regions with bbox + centroid using SciPy.
+    Returns dicts with keys: color_id, cx, cy, bbox, area.
     """
     H, W = cluster_id_final.shape
-    visited = np.zeros((H, W), dtype=bool)
-    final_regions: List[Dict] = []
+    structure = ndi.generate_binary_structure(2, 1 if CONNECTIVITY4 else 2)
 
-    for y0 in range(H):
-        for x0 in range(W):
-            if visited[y0, x0]:
+    final_regions: list[dict] = []
+    for cid in np.unique(cluster_id_final):
+        mask = (cluster_id_final == cid)
+        if not mask.any():
+            continue
+
+        labeled, n = ndi.label(mask, structure=structure)
+        if n == 0:
+            continue
+
+        # area per component
+        areas = np.bincount(labeled.ravel())[1:].astype(np.int32)
+
+        # bboxes via find_objects (slices for label 1..n)
+        slices = ndi.find_objects(labeled)
+
+        # centroids in C
+        coms = ndi.center_of_mass(mask.astype(np.uint8), labeled, index=np.arange(1, n + 1))
+
+        for i in range(n):
+            sl = slices[i]
+            if sl is None:
                 continue
-
-            cid = int(cluster_id_final[y0, x0])
-            visited[y0, x0] = True
-
-            queue = deque([(y0, x0)])
-            pixels = []
-            min_y = max_y = y0
-            min_x = max_x = x0
-
-            while queue:
-                y, x = queue.popleft()
-                pixels.append((y, x))
-
-                if y < min_y:
-                    min_y = y
-                if y > max_y:
-                    max_y = y
-                if x < min_x:
-                    min_x = x
-                if x > max_x:
-                    max_x = x
-
-                for dy, dx in NEIGHBORS:
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < H and 0 <= nx < W and not visited[ny, nx]:
-                        if int(cluster_id_final[ny, nx]) == cid:
-                            visited[ny, nx] = True
-                            queue.append((ny, nx))
-
-            ys = np.array([p[0] for p in pixels])
-            xs = np.array([p[1] for p in pixels])
-            cy = int(round(ys.mean()))
-            cx = int(round(xs.mean()))
+            y0, y1 = sl[0].start, sl[0].stop
+            x0, x1 = sl[1].start, sl[1].stop
+            cy, cx = coms[i]  # note order: (y, x)
 
             final_regions.append(
                 {
-                    "color_id": cid,
-                    "pixels": pixels,
-                    "cx": cx,
-                    "cy": cy,
-                    "bbox": (min_y, max_y, min_x, max_x),
-                    "area": len(pixels),
+                    "color_id": int(cid),
+                    "cx": float(cx),
+                    "cy": float(cy),
+                    "bbox": (int(y0), int(y1 - 1), int(x0), int(x1 - 1)),
+                    "area": int(areas[i]),
                 }
             )
 
     return final_regions
+
+
 
 
 def clean_small_final_regions(
@@ -240,9 +258,8 @@ def clean_small_final_regions(
     """
     Optional refinement pass on the final map:
 
-    - Segment into regions again.
-    - Split into big/small by min_final_region_pixels.
-    - Merge small regions into neighbouring big regions (by color distance).
+    - Segment into regions (SciPy connected components per color id).
+    - Merge small regions into neighbouring big regions.
     - Run final segmentation once more to get the definitive region list.
 
     Returns
@@ -251,29 +268,30 @@ def clean_small_final_regions(
     palette_refined : list of (R, G, B)
     final_regions : list of dict
     """
-    regions2, region_id2 = segment_regions(cluster_id_final)
-    big2, small2 = split_big_small_regions(regions2, min_final_region_pixels)
-    print(f"    [clean] final big regions: {len(big2)}, small regions: {len(small2)}")
+    region_id_img, region_color_id, region_area = segment_regions_scipy(cluster_id_final)
+
+    big_mask = region_area >= int(min_final_region_pixels)
+    big_ids = np.flatnonzero(big_mask)
+    small_ids = np.flatnonzero(~big_mask)
+
+    print(f"    [clean] final big regions: {big_ids.size}, small regions: {small_ids.size}")
 
     # If everything is either small or big, just return the segmentation as is.
-    if not small2 or not big2:
-        final_regions = segment_final_regions(cluster_id_final)
+    if small_ids.size == 0 or big_ids.size == 0:
+        final_regions = segment_final_regions_scipy(cluster_id_final)
         return cluster_id_final, palette, final_regions
 
-    adj2 = build_adjacency_small_to_big(region_id2, big2, small2)
-
-    cluster_id_refined, palette_refined = merge_small_regions(
-        cluster_id_final,
-        regions2,
-        palette,
-        big2,
-        small2,
-        adj2,
+    cluster_id_refined, palette_refined = merge_small_regions_scipy(
+        region_id_img=region_id_img,
+        region_color_id=region_color_id,
+        region_area=region_area,
+        palette=palette,
+        min_region_pixels=int(min_final_region_pixels),
+        allow_fallback=True,
     )
 
-    final_regions = segment_final_regions(cluster_id_refined)
+    final_regions = segment_final_regions_scipy(cluster_id_refined)
     return cluster_id_refined, palette_refined, final_regions
-
 
 
 def merge_small_regions_with_fallback(
@@ -368,29 +386,28 @@ def hard_cleanup_tiny_regions(
     current_map = cluster_id
     current_palette = palette
 
-    for it in range(max_iters):
-        regions, region_id_img = segment_regions(current_map)
-        big_ids, small_ids = split_big_small_regions(regions, hard_min_pixels)
+    for it in range(int(max_iters)):
+        region_id_img, region_color_id, region_area = segment_regions_scipy(current_map)
 
-        print(
-            f"[hard-clean {it}] regions={len(regions)}, "
-            f"big={len(big_ids)}, small={len(small_ids)}"
-        )
+        small_mask = region_area < int(hard_min_pixels)
+        num_regions = int(region_area.size)
+        num_small = int(np.count_nonzero(small_mask))
+        num_big = int(num_regions - num_small)
 
-        if not small_ids:
-            # nothing left to clean
+        print(f"[hard-clean {it}] regions={num_regions}, big={num_big}, small={num_small}")
+
+        if num_small == 0:
             break
 
-        adj = build_adjacency_small_to_big(region_id_img, big_ids, small_ids)
-
-        current_map, current_palette = merge_small_regions_with_fallback(
-            current_map,
-            regions,
-            current_palette,
-            big_ids,
-            small_ids,
-            adj,
+        # Merge all regions smaller than hard_min_pixels. Use fallback to guarantee progress.
+        current_map, current_palette = merge_small_regions_scipy(
+            region_id_img=region_id_img,
+            region_color_id=region_color_id,
+            region_area=region_area,
+            palette=current_palette,
+            min_region_pixels=int(hard_min_pixels),
+            allow_fallback=True,
         )
 
-    final_regions = segment_final_regions(current_map)
+    final_regions = segment_final_regions_scipy(current_map)
     return current_map, current_palette, final_regions
