@@ -14,16 +14,16 @@ from config import (
     TARGET_NUMBER_HEIGHT_MM,
     DEFAULT_RANDOM_SEED,
     get_paper_long_side_mm,
+    CONNECTIVITY4,
 )
 from quantization import quantize_kmeans_lab, smooth_cluster_map
 from smoothing import estimate_min_region_pixels
 from segmentation import (
     segment_regions_scipy,
-    split_big_small_regions,
-    build_adjacency_small_to_big,
     merge_small_regions_scipy,
     clean_small_final_regions,
     hard_cleanup_tiny_regions,
+    segment_final_regions_scipy,
 )
 from palette_utils import (
     build_ordered_palette,
@@ -215,8 +215,6 @@ def main(
         max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI,
     )
 
-    print(f"[0] MIN_REGION_PIXELS: {min_region_pixels}")
-
     # 2. Quantization
     t = time.perf_counter()
     cluster_id_raw, palette_colors, quant_arr = quantize_kmeans_lab(
@@ -243,7 +241,6 @@ def main(
     )
 
     print(f"[3] Cluster map smoothing ({time.perf_counter() - t:.2f}s)")
-    print(f"    Colors after smoothing: {len(palette_final)}")
 
     # 4. First segmentation
     t = time.perf_counter()
@@ -252,8 +249,6 @@ def main(
         f"[4] First segmentation: total regions {len(region_color_id)} "
         f"({time.perf_counter() - t:.2f}s)"
     )
-
-    # 5. Split big/small
 
     # 6. Neighbour graph & merge small regions
     t = time.perf_counter()
@@ -268,32 +263,35 @@ def main(
     print(
         f"[6] Merge small regions ({time.perf_counter() - t:.2f}s)"
     )
-    print(f"    Colors after merging: {len(palette_merged)}")
 
     # 7. Final clean-up segmentation
     t = time.perf_counter()
-    cluster_id_refined, palette_refined, final_regions = clean_small_final_regions(
+    cluster_id_refined, palette_refined = clean_small_final_regions(
         cluster_id_final,
         palette_merged,
         min_final_region_pixels=min_region_pixels,
+        return_regions=False,
     )
     print(
-        f"[7] Second segmentation: final regions {len(final_regions)} "
-        f"({time.perf_counter() - t:.2f}s)"
+        f"[7] Second segmentation: ({time.perf_counter() - t:.2f}s)"
     )
     # hard cleanup: no region smaller than min_region_pixels
-    cluster_id_hard, palette_hard, final_regions_hard = hard_cleanup_tiny_regions(
+    t = time.perf_counter()
+    cluster_id_hard, palette_hard = hard_cleanup_tiny_regions(
         cluster_id_refined,
         palette_refined,
         hard_min_pixels=min_region_pixels,
         max_iters=3,
     )
-    print(f"[7b] After hard cleanup: final regions {len(final_regions_hard)}")
+    print(f"[7b] hard cleanup: ({time.perf_counter() - t:.2f}s)")
     
     cluster_id_refined = cluster_id_hard
     palette_refined = palette_hard
-    final_regions = final_regions_hard
 
+    t = time.perf_counter()
+    final_regions = segment_final_regions_scipy(cluster_id_refined, connectivity4=CONNECTIVITY4)
+    print(f"[7c] Final regions for rendering: {len(final_regions)} ({time.perf_counter() - t:.2f}s)")
+    
     # 8. Palette ordering & numbering (based on final palette)
     t = time.perf_counter()
     color_id_to_paint_index, paint_palette = build_ordered_palette(palette_refined)
@@ -304,7 +302,6 @@ def main(
 
     DPI = 300
     target_long_px = int(round(DPI * (print_long_mm / 25.4)))
-    print(f"[9] Target render long side: {target_long_px}px (@{DPI} dpi)")
     
     outline_img, colored_img, labels_big, scale_render = render_outline_and_colored_highres(
         cluster_id_refined, 
@@ -318,7 +315,6 @@ def main(
         image_long_px=target_long_px,
         print_long_mm=print_long_mm,
     )
-    print(f"[9] Number font size (hi-res): {font_size_px_hi}px")
     
     draw_numbers_on_outline_highres(
         outline_img,

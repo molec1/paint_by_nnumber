@@ -200,15 +200,20 @@ def merge_small_regions_scipy(
     return cluster_id_final, palette_final
 
 
-def segment_final_regions_scipy(cluster_id_final: np.ndarray) -> list[dict]:
+def segment_final_regions_scipy(cluster_id_final: np.ndarray, connectivity4: bool = True) -> list[dict]:
     """
-    Final connected regions with bbox + centroid using SciPy.
+    Final connected regions with bbox + centroid.
+    Faster than center_of_mass + find_objects by using bincount-based stats.
+
     Returns dicts with keys: color_id, cx, cy, bbox, area.
+    bbox format: (y0, y1, x0, x1), inclusive.
     """
     H, W = cluster_id_final.shape
-    structure = ndi.generate_binary_structure(2, 1 if CONNECTIVITY4 else 2)
+    structure = ndi.generate_binary_structure(2, 1 if connectivity4 else 2)
 
+    yy, xx = np.indices((H, W), dtype=np.int32)
     final_regions: list[dict] = []
+
     for cid in np.unique(cluster_id_final):
         mask = (cluster_id_final == cid)
         if not mask.any():
@@ -218,56 +223,58 @@ def segment_final_regions_scipy(cluster_id_final: np.ndarray) -> list[dict]:
         if n == 0:
             continue
 
-        # area per component
-        areas = np.bincount(labeled.ravel())[1:].astype(np.int32)
+        lab = labeled.ravel()
+        # areas for labels 1..n
+        area = np.bincount(lab)[1:].astype(np.int32)
 
-        # bboxes via find_objects (slices for label 1..n)
-        slices = ndi.find_objects(labeled)
+        # centroid: sum(x)/area, sum(y)/area using weights
+        sum_x = np.bincount(lab, weights=xx.ravel())[1:]
+        sum_y = np.bincount(lab, weights=yy.ravel())[1:]
+        cx = sum_x / np.maximum(area, 1)
+        cy = sum_y / np.maximum(area, 1)
 
-        # centroids in C
-        coms = ndi.center_of_mass(mask.astype(np.uint8), labeled, index=np.arange(1, n + 1))
+        # bbox: min/max x/y per label via bincount-style reduction
+        # We compute mins/maxs by initializing with sentinel and using np.minimum/maximum with ufunc.at
+        x_min = np.full(n + 1, W, dtype=np.int32)
+        x_max = np.full(n + 1, -1, dtype=np.int32)
+        y_min = np.full(n + 1, H, dtype=np.int32)
+        y_max = np.full(n + 1, -1, dtype=np.int32)
 
-        for i in range(n):
-            sl = slices[i]
-            if sl is None:
+        # only consider foreground pixels (label > 0)
+        fg = lab > 0
+        lab_fg = lab[fg]
+        x_fg = xx.ravel()[fg]
+        y_fg = yy.ravel()[fg]
+
+        np.minimum.at(x_min, lab_fg, x_fg)
+        np.maximum.at(x_max, lab_fg, x_fg)
+        np.minimum.at(y_min, lab_fg, y_fg)
+        np.maximum.at(y_max, lab_fg, y_fg)
+
+        for i in range(1, n + 1):
+            a = int(area[i - 1])
+            if a <= 0:
                 continue
-            y0, y1 = sl[0].start, sl[0].stop
-            x0, x1 = sl[1].start, sl[1].stop
-            cy, cx = coms[i]  # note order: (y, x)
 
             final_regions.append(
                 {
                     "color_id": int(cid),
-                    "cx": float(cx),
-                    "cy": float(cy),
-                    "bbox": (int(y0), int(y1 - 1), int(x0), int(x1 - 1)),
-                    "area": int(areas[i]),
+                    "cx": float(cx[i - 1]),
+                    "cy": float(cy[i - 1]),
+                    "bbox": (int(y_min[i]), int(y_max[i]), int(x_min[i]), int(x_max[i])),
+                    "area": a,
                 }
             )
 
     return final_regions
 
 
-
-
 def clean_small_final_regions(
     cluster_id_final: np.ndarray,
-    palette: List[Tuple[int, int, int]],
+    palette: list[tuple[int, int, int]],
     min_final_region_pixels: int,
-) -> Tuple[np.ndarray, List[Tuple[int, int, int]], List[Dict]]:
-    """
-    Optional refinement pass on the final map:
-
-    - Segment into regions (SciPy connected components per color id).
-    - Merge small regions into neighbouring big regions.
-    - Run final segmentation once more to get the definitive region list.
-
-    Returns
-    -------
-    cluster_id_refined : np.ndarray
-    palette_refined : list of (R, G, B)
-    final_regions : list of dict
-    """
+    return_regions: bool = True,
+):
     region_id_img, region_color_id, region_area = segment_regions_scipy(cluster_id_final)
 
     big_mask = region_area >= int(min_final_region_pixels)
@@ -276,10 +283,11 @@ def clean_small_final_regions(
 
     print(f"    [clean] final big regions: {big_ids.size}, small regions: {small_ids.size}")
 
-    # If everything is either small or big, just return the segmentation as is.
     if small_ids.size == 0 or big_ids.size == 0:
-        final_regions = segment_final_regions_scipy(cluster_id_final)
-        return cluster_id_final, palette, final_regions
+        if return_regions:
+            final_regions = segment_final_regions_scipy(cluster_id_final)
+            return cluster_id_final, palette, final_regions
+        return cluster_id_final, palette
 
     cluster_id_refined, palette_refined = merge_small_regions_scipy(
         region_id_img=region_id_img,
@@ -290,8 +298,11 @@ def clean_small_final_regions(
         allow_fallback=True,
     )
 
-    final_regions = segment_final_regions_scipy(cluster_id_refined)
-    return cluster_id_refined, palette_refined, final_regions
+    if return_regions:
+        final_regions = segment_final_regions_scipy(cluster_id_refined)
+        return cluster_id_refined, palette_refined, final_regions
+    return cluster_id_refined, palette_refined
+
 
 
 def merge_small_regions_with_fallback(
@@ -409,5 +420,4 @@ def hard_cleanup_tiny_regions(
             allow_fallback=True,
         )
 
-    final_regions = segment_final_regions_scipy(current_map)
-    return current_map, current_palette, final_regions
+    return current_map, current_palette

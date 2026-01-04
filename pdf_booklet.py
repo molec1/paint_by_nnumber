@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import csv
+from functools import lru_cache
 from typing import Tuple
 
 import webcolors
+from PIL import Image, ImageOps
 from reportlab.lib.pagesizes import A1, A2, A3, A4, A5, landscape, portrait
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
-
+import io
 
 def closest_css3_name(rgb_tuple: Tuple[int, int, int]) -> str:
     """
@@ -23,8 +25,11 @@ def closest_css3_name(rgb_tuple: Tuple[int, int, int]) -> str:
         if min_dist is None or dist < min_dist:
             min_dist = dist
             best = name
-    # "light-sky-blue" -> "Light Sky Blue"
     return best.replace("-", " ").title()
+
+@lru_cache(maxsize=256)
+def closest_css3_name_cached(r: int, g: int, b: int) -> str:
+    return closest_css3_name((r, g, b))
 
 
 def read_palette_with_names(palette_csv_path: str):
@@ -44,16 +49,50 @@ def read_palette_with_names(palette_csv_path: str):
             idx, R, G, B, hex_code = row
             idx = int(idx)
             rgb = (int(R), int(G), int(B))
-            name = closest_css3_name(rgb)
+            name = closest_css3_name_cached(*rgb)
             colors.append((idx, rgb, hex_code, name))
 
     colors.sort(key=lambda t: t[0])
     return colors
 
 
+@lru_cache(maxsize=8)
+def load_image_reader(path: str) -> ImageReader:
+    """
+    Fast path:
+      - If EXIF Orientation is normal (1) or missing, let ReportLab read JPEG/PNG directly from disk.
+    Slow path (only when needed):
+      - Apply EXIF orientation via PIL and re-encode to JPEG in-memory,
+        so ReportLab embeds a compressed JPEG stream (much faster than embedding raw pixels).
+    """
+    # Try to detect EXIF orientation cheaply
+    try:
+        with Image.open(path) as im_probe:
+            exif = im_probe.getexif()
+            orientation = int(exif.get(274, 1)) if exif is not None else 1  # 274 = Orientation
+    except Exception:
+        orientation = 1
+
+    if orientation == 1:
+        # Fastest: keep original compression and let ReportLab read from file
+        return ImageReader(path)
+
+    # Only for rotated images: transpose and keep JPEG compression via BytesIO
+    with Image.open(path) as im:
+        im = ImageOps.exif_transpose(im)
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=92, optimize=True)
+        buf.seek(0)
+
+    return ImageReader(buf)
+
+
 def draw_centered_image(
     c: canvas.Canvas,
-    path: str,
+    img: ImageReader,  # changed: pass ImageReader instead of path
     box_w: float,
     box_h: float,
     x: float,
@@ -62,7 +101,6 @@ def draw_centered_image(
     """
     Draw an image inside (x, y, box_w, box_h) keeping aspect ratio.
     """
-    img = ImageReader(path)
     iw, ih = img.getSize()
 
     scale = min(box_w / iw, box_h / ih)
@@ -77,7 +115,7 @@ def draw_centered_image(
 
 def draw_big_palette(
     c: canvas.Canvas,
-    colors,   # list of (idx, (R,G,B), hex_code, name)
+    colors,  # list of (idx, (R,G,B), hex_code, name)
     box_x: float,
     box_y: float,
     box_w: float,
@@ -161,7 +199,7 @@ def build_pbn_pdf_booklet(
     outline_path: str,
     palette_csv_path: str,
     pdf_name: str | None = None,
-    paper_size: str = 'A3'
+    paper_size: str = "A3",
 ) -> None:
     """
     Build a 2-page PDF:
@@ -174,16 +212,20 @@ def build_pbn_pdf_booklet(
     if pdf_name is None:
         pdf_name = f"output/{root}_booklet.pdf"
 
-    # ------- Page 1: A3 outline only -------
-    outline_img = ImageReader(outline_path)
+    # Load images once (EXIF orientation applied) and reuse the readers.
+    outline_img = load_image_reader(outline_path)
+    orig_img = load_image_reader(original_path)
+
+    # ------- Page 1: outline only -------
     ow, oh = outline_img.getSize()
-    
+
     size_dict = {
-        'A1': A1,
-        'A2': A2,
-        'A3': A3,
-        'A4': A4,
-        'A5': A5,}
+        "A1": A1,
+        "A2": A2,
+        "A3": A3,
+        "A4": A4,
+        "A5": A5,
+    }
 
     if ow >= oh:
         page1_size = landscape(size_dict[paper_size])
@@ -196,7 +238,7 @@ def build_pbn_pdf_booklet(
     margin = 5 * mm
     draw_centered_image(
         c,
-        outline_path,
+        outline_img,
         W1 - 2 * margin,
         H1 - 2 * margin,
         margin,
@@ -206,8 +248,7 @@ def build_pbn_pdf_booklet(
     c.showPage()
 
     # ------- Page 2: A4, original orientation -------
-    orig_img_reader = ImageReader(original_path)
-    ow0, oh0 = orig_img_reader.getSize()
+    ow0, oh0 = orig_img.getSize()
     if ow0 >= oh0:
         page2_size = landscape(A4)
     else:
@@ -232,7 +273,7 @@ def build_pbn_pdf_booklet(
 
     draw_centered_image(
         c,
-        original_path,
+        orig_img,
         half_w,
         top_box_h,
         margin_x,
@@ -241,7 +282,7 @@ def build_pbn_pdf_booklet(
 
     draw_centered_image(
         c,
-        outline_path,
+        outline_img,
         half_w,
         top_box_h,
         margin_x * 2 + half_w,

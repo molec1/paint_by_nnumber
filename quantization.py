@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.cluster import KMeans
 
 from colorspace import rgb_to_lab, lab_to_rgb
-from smoothing import estimate_smoothing_radius_px, smooth_labels_radius, compute_strong_edges_lab
+from smoothing import estimate_smoothing_radius_px, smooth_labels_radius_scipy
 
 from PIL import Image
 
@@ -112,19 +112,12 @@ def smooth_cluster_map(
     )
 
     print(f"[2] Smoothing window radius: {radius} pixels for {print_long_mm:.0f} mm long side")
-
     
-    edge_right, edge_down = compute_strong_edges_lab(orig_arr, quantile=0.97)
-    save_edges_png(edge_right, edge_down, 'output/strong_edges.png')  # add path in build_output_paths
-
-    
-    cluster_id_smoothed = smooth_labels_radius(
+    cluster_id_smoothed = smooth_labels_radius_scipy(
         cluster_id_raw,
         num_labels=num_initial_colors,
         radius=radius,
         iterations=2,
-        edge_right=edge_right,
-        edge_down=edge_down,
     )
     final_cids, inverse2 = np.unique(
         cluster_id_smoothed, axis=None, return_inverse=True
