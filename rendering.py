@@ -7,8 +7,6 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from config import LINE_THICKNESS_MM
 
-from config import NEIGHBORS
-from smoothing import dilate_mask
 
 def render_outline_and_colored_highres(
     cluster_id_img: np.ndarray,  # (H, W) int color_id per pixel
@@ -59,34 +57,16 @@ def render_outline_and_colored_highres(
     border[:-1, :] |= diff_v
 
     # thickness (you keep your formula)
-    thickness_hi = max(1, int(round(300 * (LINE_THICKNESS_MM / 25.4))))
+    DPI = 300
+    thickness_hi = max(1, int(round(DPI * (LINE_THICKNESS_MM / 25.4))))
 
     # fast dilation on C
     if thickness_hi > 1:
         structure = ndi.generate_binary_structure(2, 1)  # 4-connected
-        border_thick = ndi.binary_dilation(border, structure=structure, iterations=thickness_hi)
+        structure_big = ndi.iterate_structure(structure, thickness_hi)
+        border_thick = ndi.binary_dilation(border, structure=structure_big, iterations=1)
     else:
         border_thick = border
-
-    outline_arr[border_thick] = (0, 0, 0)
-    colored_arr[border_thick] = (0, 0, 0)
-
-    # 4) Contours from label differences
-    border = np.zeros((H2, W2), dtype=bool)
-    for dy, dx in NEIGHBORS:
-        ys = slice(max(0, -dy), min(H2, H2 - dy))
-        xs = slice(max(0, -dx), min(W2, W2 - dx))
-        ys2 = slice(max(0, -dy) + dy, min(H2, H2 - dy) + dy)
-        xs2 = slice(max(0, -dx) + dx, min(W2, W2 - dx) + dx)
-
-        m1 = labels_big[ys, xs]
-        m2 = labels_big[ys2, xs2]
-        border[ys, xs] |= (m1 != m2)
-
-    # Scale thickness to hi-res
-    thickness_hi = max(1, int(round(300 * (LINE_THICKNESS_MM / 25.4))))
-
-    border_thick = dilate_mask(border, thickness_hi)
 
     outline_arr[border_thick] = (0, 0, 0)
     colored_arr[border_thick] = (0, 0, 0)
@@ -94,6 +74,7 @@ def render_outline_and_colored_highres(
     outline_img = Image.fromarray(outline_arr, mode="RGB")
     colored_img = Image.fromarray(colored_arr, mode="RGB")
     return outline_img, colored_img, labels_big, scale
+
 
 def _load_font(font_size: int) -> ImageFont.ImageFont:
     try:
@@ -114,7 +95,7 @@ def draw_numbers_on_outline_highres(
     scale: float,
     max_repeats_per_region: int = 4,
     min_dist_factor: float = 7.0,
-    area_per_label_factor: float = 60.0,
+    area_per_label_factor: float = 100.0,
 ) -> None:
     """
     Place labels inside regions.
@@ -129,7 +110,6 @@ def draw_numbers_on_outline_highres(
     This version avoids expensive rectangular erosions.
     Requires SciPy (distance transform).
     """
-    from scipy import ndimage as ndi
 
     W2, H2 = outline_img.size
     draw = ImageDraw.Draw(outline_img)
@@ -145,7 +125,9 @@ def draw_numbers_on_outline_highres(
             text_metrics[text] = (tw, th)
         return text_metrics[text]
 
-    def _fits_rect(local_mask: np.ndarray, tx: int, ty: int, tw: int, th: int, inner_margin: int) -> bool:
+    def _fits_rect(
+        local_mask: np.ndarray, tx: int, ty: int, tw: int, th: int, inner_margin: int
+    ) -> bool:
         H_loc, W_loc = local_mask.shape
         if tx < 0 or ty < 0:
             return False
@@ -204,9 +186,15 @@ def draw_numbers_on_outline_highres(
         inner_margin: int,
         prefer_center: bool = True,
         max_tries: int = 6,
+        ds: int = 1,
     ) -> bool:
         """
         Place ONE label inside [x0:x1, y0:y1] window.
+
+        dist is either:
+          - EDT on local_mask (ds=1)
+          - EDT on local_mask[::ds, ::ds] (ds=2), then we map candidate back to hi-res.
+
         We pick a candidate point by "deepness" (distance to boundary) and optionally
         add a tiny bias towards the window center to avoid drifting to one corner.
         """
@@ -218,25 +206,86 @@ def draw_numbers_on_outline_highres(
         if x1 <= x0 or y1 <= y0:
             return False
 
-        # Candidate mask inside the window
-        win_mask = local_mask[y0:y1, x0:x1]
-        if not win_mask.any():
+        # Candidate mask inside the window (hi-res mask for fit checks)
+        win_mask_hi = local_mask[y0:y1, x0:x1]
+        if not win_mask_hi.any():
             return False
 
-        win_dist = dist[y0:y1, x0:x1].copy()
+        if ds <= 1:
+            # dist is hi-res
+            win_mask = win_mask_hi
+            win_dist = dist[y0:y1, x0:x1]  # NO copy
+
+            if prefer_center:
+                cy = (y1 - y0 - 1) / 2.0
+                cx = (x1 - x0 - 1) / 2.0
+                yy, xx = np.ogrid[0:(y1 - y0), 0:(x1 - x0)]
+                d2 = (yy - cy) * (yy - cy) + (xx - cx) * (xx - cx)
+                work = np.where(win_mask, win_dist - 0.002 * d2, -1e9)
+            else:
+                work = np.where(win_mask, win_dist, -1e9)
+
+            win_w = x1 - x0
+            win_h = y1 - y0
+
+            for _ in range(int(max_tries)):
+                idx = int(np.argmax(work))
+                best = float(work.ravel()[idx])
+                if best < -1e8:
+                    break
+
+                wy = idx // win_w
+                wx = idx % win_w
+                cx_loc = x0 + wx
+                cy_loc = y0 + wy
+
+                if _draw_text_at_center(
+                    local_mask, min_x2, min_y2, cx_loc, cy_loc, text, tw, th, inner_margin
+                ):
+                    return True
+
+                rr = max(4, int(round(0.8 * float(font_size))))
+                yy0 = max(0, wy - rr)
+                yy1 = min(win_h, wy + rr + 1)
+                xx0 = max(0, wx - rr)
+                xx1 = min(win_w, wx + rr + 1)
+                work[yy0:yy1, xx0:xx1] = -1e9
+
+            return False
+
+        # ds == 2 path: dist is on downsample grid, but fit check is on hi-res mask
+        ds = int(ds)
+        x0d = x0 // ds
+        y0d = y0 // ds
+        x1d = (x1 + (ds - 1)) // ds
+        y1d = (y1 + (ds - 1)) // ds
+
+        Hd, Wd = dist.shape
+        x0d = max(0, min(Wd, x0d))
+        x1d = max(0, min(Wd, x1d))
+        y0d = max(0, min(Hd, y0d))
+        y1d = max(0, min(Hd, y1d))
+        if x1d <= x0d or y1d <= y0d:
+            return False
+
+        # downsampled window mask for candidate selection
+        local_mask_d = local_mask[::ds, ::ds]
+        win_mask_d = local_mask_d[y0d:y1d, x0d:x1d]
+        if not win_mask_d.any():
+            return False
+
+        win_dist_d = dist[y0d:y1d, x0d:x1d]  # NO copy
+        win_wd = x1d - x0d
+        win_hd = y1d - y0d
 
         if prefer_center:
-            # Small bias towards window center (cheap, prevents "all in one corner")
-            cy = (y1 - y0 - 1) / 2.0
-            cx = (x1 - x0 - 1) / 2.0
-            yy, xx = np.ogrid[0:(y1 - y0), 0:(x1 - x0)]
+            cy = (win_hd - 1) / 2.0
+            cx = (win_wd - 1) / 2.0
+            yy, xx = np.ogrid[0:win_hd, 0:win_wd]
             d2 = (yy - cy) * (yy - cy) + (xx - cx) * (xx - cx)
-            # Normalize and subtract a small term so center is slightly preferred
-            # (keeps primary criterion = deepness)
-            win_dist = win_dist - 0.002 * d2
-
-        # Try several peaks (in case the max doesn't fit the text rectangle)
-        work = np.where(win_mask, win_dist, -1e9)
+            work = np.where(win_mask_d, win_dist_d - 0.002 * d2, -1e9)
+        else:
+            work = np.where(win_mask_d, win_dist_d, -1e9)
 
         for _ in range(int(max_tries)):
             idx = int(np.argmax(work))
@@ -244,20 +293,27 @@ def draw_numbers_on_outline_highres(
             if best < -1e8:
                 break
 
-            wy = idx // (x1 - x0)
-            wx = idx % (x1 - x0)
-            cx_loc = x0 + wx
-            cy_loc = y0 + wy
+            wy = idx // win_wd
+            wx = idx % win_wd
 
-            if _draw_text_at_center(local_mask, min_x2, min_y2, cx_loc, cy_loc, text, tw, th, inner_margin):
+            # map candidate back to hi-res
+            cx_loc = x0 + (wx * ds)
+            cy_loc = y0 + (wy * ds)
+
+            # clamp into bbox
+            cx_loc = max(0, min(W_loc - 1, cx_loc))
+            cy_loc = max(0, min(H_loc - 1, cy_loc))
+
+            if _draw_text_at_center(
+                local_mask, min_x2, min_y2, cx_loc, cy_loc, text, tw, th, inner_margin
+            ):
                 return True
 
-            # Suppress a neighborhood around this failed point and retry
-            rr = max(4, int(round(0.8 * float(font_size))))
+            rr = max(2, int(round(0.5 * float(font_size) / float(ds))))
             yy0 = max(0, wy - rr)
-            yy1 = min((y1 - y0), wy + rr + 1)
+            yy1 = min(win_hd, wy + rr + 1)
             xx0 = max(0, wx - rr)
-            xx1 = min((x1 - x0), wx + rr + 1)
+            xx1 = min(win_wd, wx + rr + 1)
             work[yy0:yy1, xx0:xx1] = -1e9
 
         return False
@@ -283,19 +339,14 @@ def draw_numbers_on_outline_highres(
             else:
                 m, k = 1, target
         else:
-            # Choose m,k close to sqrt while respecting aspect
-            # m * k >= target
             base = float(target) ** 0.5
             m = max(1, int(round(base * (aspect ** 0.5))))
             k = max(1, int(np.ceil(target / float(m))))
-            # Cap to avoid silly splits
             m = min(m, 12)
             k = min(k, 12)
-            # Ensure coverage
             if m * k < target:
                 k = min(12, int(np.ceil(target / float(m))))
 
-        # Build windows in row-major order
         xs = [int(round(i * W_loc / float(m))) for i in range(m + 1)]
         ys = [int(round(j * H_loc / float(k))) for j in range(k + 1)]
 
@@ -337,21 +388,36 @@ def draw_numbers_on_outline_highres(
         if H_loc <= 0 or W_loc <= 0:
             continue
 
-        # Too small: do not try multiple placements
         if int(local_mask.sum()) < int(tw * th * 2):
             target = 1
 
         inner_margin = max(1, font_size // 6)
 
-        # Precompute distance transform ONCE per region (fast enough, much faster than erosions)
-        dist = ndi.distance_transform_edt(local_mask)
+        # ----- EDT (fast path): downsample x2 for large bboxes -----
+        # Threshold tuned to be conservative: only if bbox is fairly large.
+        # (You can adjust later; it is safe quality-wise because final fit check is hi-res.)
+        area_bbox = int(H_loc * W_loc)
+        if area_bbox >= 2_000_000:
+            ds = 4
+        elif area_bbox >= 350_000:
+            ds = 2
+        else:
+            ds = 1
+
+        pad = 1
+        if ds == 1:
+            lm = np.pad(local_mask, pad_width=pad, mode="constant", constant_values=False)
+            dist = ndi.distance_transform_edt(lm)[pad:-pad, pad:-pad]
+        else:
+            lm_d = local_mask[::ds, ::ds]
+            lm_d = np.pad(lm_d, pad_width=pad, mode="constant", constant_values=False)
+            dist = ndi.distance_transform_edt(lm_d)[pad:-pad, pad:-pad]
 
         windows = _split_into_grid_windows(W_loc=W_loc, H_loc=H_loc, target=target)
 
         placed = 0
 
         if target == 1:
-            # Single placement: whole bbox window
             ok = _place_one_label_in_window(
                 local_mask=local_mask,
                 dist=dist,
@@ -367,23 +433,18 @@ def draw_numbers_on_outline_highres(
                 inner_margin=inner_margin,
                 prefer_center=True,
                 max_tries=10,
+                ds=ds,
             )
             if ok:
                 continue
-            # If failed, give up quietly (better than boundary junk)
             continue
 
-        # Multi placement: place once per sub-window, stop when reached `target`
-        # Order windows to spread along the dominant axis first:
-        # - elongated horizontal: left->right
-        # - elongated vertical: top->bottom
-        # - general: row-major is ok
         aspect = float(W_loc) / float(max(1, H_loc))
         elongated = aspect >= 6.0 or (1.0 / aspect) >= 6.0
         if elongated and W_loc >= H_loc:
-            windows.sort(key=lambda w: (w[0] + w[1]) / 2.0)  # by x center
+            windows.sort(key=lambda w: (w[0] + w[1]) / 2.0)
         elif elongated:
-            windows.sort(key=lambda w: (w[2] + w[3]) / 2.0)  # by y center
+            windows.sort(key=lambda w: (w[2] + w[3]) / 2.0)
 
         for (x0, x1, y0, y1) in windows:
             if placed >= target:
@@ -404,12 +465,11 @@ def draw_numbers_on_outline_highres(
                 inner_margin=inner_margin,
                 prefer_center=True,
                 max_tries=8,
+                ds=ds,
             )
             if ok:
                 placed += 1
 
-        # Optional mild fallback: if we placed less than target, try again on the full region
-        # but do not exceed target. This helps complex shapes where some windows are empty.
         while placed < target:
             ok = _place_one_label_in_window(
                 local_mask=local_mask,
@@ -424,11 +484,10 @@ def draw_numbers_on_outline_highres(
                 tw=tw,
                 th=th,
                 inner_margin=inner_margin,
-                prefer_center=False,  # now prefer deepness over window-center bias
+                prefer_center=False,
                 max_tries=6,
+                ds=ds,
             )
             if not ok:
                 break
             placed += 1
-
-

@@ -8,39 +8,6 @@ from sklearn.cluster import KMeans
 from colorspace import rgb_to_lab, lab_to_rgb
 from smoothing import estimate_smoothing_radius_px, smooth_labels_radius_scipy
 
-from PIL import Image
-
-
-def edges_to_image(edge_right: np.ndarray, edge_down: np.ndarray) -> Image.Image:
-    """
-    Convert edge masks to a visualization image.
-
-    edge_right: (H, W-1) bool, boundary between (y,x) and (y,x+1)
-    edge_down : (H-1, W) bool, boundary between (y,x) and (y+1,x)
-
-    Returns a grayscale image (H, W) where 255 indicates a strong edge.
-    """
-    h = edge_right.shape[0]
-    w = edge_down.shape[1]
-
-    vis = np.zeros((h, w), dtype=np.uint8)
-
-    # Mark vertical boundaries (between x and x+1) at the right pixel.
-    vis[:, 1:] |= (edge_right.astype(np.uint8) * 255)
-
-    # Mark horizontal boundaries (between y and y+1) at the bottom pixel.
-    vis[1:, :] |= (edge_down.astype(np.uint8) * 255)
-
-    return Image.fromarray(vis, mode="L")
-
-
-def save_edges_png(edge_right: np.ndarray, edge_down: np.ndarray, path: str) -> None:
-    """
-    Save strong edges visualization as PNG.
-    """
-    img = edges_to_image(edge_right, edge_down)
-    img.save(path)
-
 
 def quantize_kmeans_lab(
     orig_arr: np.ndarray,

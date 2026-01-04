@@ -127,36 +127,6 @@ def resize_for_print(
     return resized, scale
 
 
-def analyze_final_regions(final_regions, print_long_mm: float, image_long_px: int):
-    """
-    final_regions: output of segment_final_regions
-    print_long_mm: long side of paper in mm (A4/A3/A2)
-    image_long_px: long side of processed image in px
-    """
-    mm_per_px = print_long_mm / float(image_long_px)
-    mm2_per_px = mm_per_px ** 2
-
-    areas_px = np.array([reg["area"] for reg in final_regions], dtype=np.float64)
-    areas_mm2 = areas_px * mm2_per_px
-
-    total = len(final_regions)
-    smaller_1 = int((areas_mm2 < 1.0).sum())
-    smaller_2 = int((areas_mm2 < 2.0).sum())
-
-    print("\n[Region statistics]")
-    print(f"Total regions:        {total}")
-    print(f"Area < 1 mm²:         {smaller_1}")
-    print(f"Area < 2 mm²:         {smaller_2}")
-    print(f"Min area px:          {areas_px.min():.0f}")
-    print(f"Min area mm²:         {areas_mm2.min():.3f}")
-    print(f"Median area mm²:      {np.median(areas_mm2):.3f}")
-    print(f"1st percentile mm²:   {np.percentile(areas_mm2, 1):.3f}")
-    print(f"5th percentile mm²:   {np.percentile(areas_mm2, 5):.3f}")
-    print(f"25th percentile mm²:  {np.percentile(areas_mm2, 25):.3f}")
-
-    return
-
-
 def main(
     input_path: str,
     paper_size: str = "A3",
