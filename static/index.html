@@ -79,6 +79,17 @@
           <div style="margin-top:12px;">
             <a id="downloadLink" href="#" style="display:none; font-weight:600;">Download PDF (A4)</a>
           </div>
+          
+          <div style="margin-top:12px;">
+              <img id="coloredPreview"
+                   src=""
+                   alt="Colored preview"
+                   style="display:none; width:100%; border-radius:12px; border:1px solid #2a3442; cursor: zoom-in;" />
+
+              <div id="coloredHint" style="display:none; margin-top:8px; font-size:12px; color:#7f8ba0;">
+                Colored preview (downscaled). This is how it looks if you color it perfectly.
+              </div>
+          </div>
 
           <div class="upsell">
             <div style="font-weight:600; color:#d7e0ee;">Want it larger?</div>
@@ -94,6 +105,39 @@
       </div>
     </div>
   </div>
+<div id="lightbox" style="
+  display:none;
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,0.86);
+  z-index:9999;
+  padding:24px;
+">
+  <div style="position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">
+    <button id="lightboxClose" aria-label="Close" style="
+      position:absolute;
+      top:10px;
+      right:10px;
+      width:44px;
+      height:44px;
+      border-radius:12px;
+      border:1px solid #2a3442;
+      background:#0e1217;
+      color:#e9eef5;
+      font-size:20px;
+      cursor:pointer;
+    ">✕</button>
+
+    <img id="lightboxImg" src="" alt="Preview large" style="
+      max-width:100%;
+      max-height:100%;
+      border-radius:14px;
+      border:1px solid #2a3442;
+      background:#0e1217;
+      object-fit:contain;
+    "/>
+  </div>
+</div>
 
 <script>
   const fileEl = document.getElementById("file");
@@ -175,6 +219,13 @@
       URL.revokeObjectURL(url);
     };
     img.src = url;
+    
+    const prevImg = document.getElementById("coloredPreview");
+    const prevHint = document.getElementById("coloredHint");
+    prevImg.style.display = "none";
+    prevImg.src = "";
+    prevHint.style.display = "none";
+
   });
 
   goEl.onclick = async () => {
@@ -202,6 +253,21 @@
       downloadLink.href = data.pdf_url;
       downloadLink.style.display = "inline-block";
       setStatus(`Generated.\nDetail: ${data.meta.detail} (${data.meta.min_feature_mm}mm)\nColors: ${data.meta.colors}\nCrop: ${data.meta.auto_crop}\nSaturation: ${data.meta.auto_saturation}`);
+      
+      const prevImg = document.getElementById("coloredPreview");
+      const prevHint = document.getElementById("coloredHint");
+        
+      if (data.colored_url) {
+          // cache bust, чтобы браузер не показывал старый файл
+          prevImg.src = data.colored_url + "?t=" + Date.now();
+          prevImg.style.display = "block";
+          prevHint.style.display = "block";
+      } else {
+          prevImg.style.display = "none";
+          prevImg.src = "";
+          prevHint.style.display = "none";
+      }
+
     } catch (err) {
       setStatus("Error: " + (err && err.message ? err.message : String(err)));
       metaEl.textContent = "Failed";
@@ -209,6 +275,47 @@
       goEl.disabled = false;
     }
   };
+(function setupLightbox() {
+  const lb = document.getElementById("lightbox");
+  const lbImg = document.getElementById("lightboxImg");
+  const lbClose = document.getElementById("lightboxClose");
+  const prevImg = document.getElementById("coloredPreview");
+
+  function openLightbox(src) {
+    if (!src) return;
+    lbImg.src = src;
+    lb.style.display = "block";
+    document.body.style.overflow = "hidden";
+  }
+
+  function closeLightbox() {
+    lb.style.display = "none";
+    lbImg.src = "";
+    document.body.style.overflow = "";
+  }
+
+  // click preview -> open
+  prevImg.addEventListener("click", () => {
+    // open the same URL (already downscaled to 2048 long side)
+    openLightbox(prevImg.src);
+  });
+
+  // close button
+  lbClose.addEventListener("click", closeLightbox);
+
+  // click outside image closes
+  lb.addEventListener("click", (e) => {
+    if (e.target === lb) closeLightbox();
+  });
+
+  // ESC closes
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && lb.style.display === "block") {
+      closeLightbox();
+    }
+  });
+})();
+
 </script>
 </body>
 </html>

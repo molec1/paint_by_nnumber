@@ -11,7 +11,8 @@ from typing import Optional, Tuple
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
+
 
 import pipeline  # uses your existing pipeline.main()
 
@@ -130,6 +131,21 @@ def _auto_saturate(img: Image.Image) -> Image.Image:
     return enhancer.enhance(1.10)  # 10% boost
 
 
+def _downscale_long_side_jpeg(in_path: Path, out_path: Path, long_side: int = 2048) -> None:
+    img = Image.open(str(in_path)).convert("RGB")
+    w, h = img.size
+    long_now = max(w, h)
+
+    if long_now > long_side:
+        scale = long_side / float(long_now)
+        w2 = max(1, int(round(w * scale)))
+        h2 = max(1, int(round(h * scale)))
+        img = img.resize((w2, h2), resample=Image.LANCZOS)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.save(str(out_path), format="JPEG", quality=90, optimize=True)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     html_path = APP_DIR / "static" / "index.html"
@@ -158,6 +174,7 @@ def generate_preview(
 
     try:
         img = Image.open(io.BytesIO(raw))
+        img = ImageOps.exif_transpose(img)
         img.load()
     except Exception:
         raise HTTPException(status_code=400, detail="Cannot read image. Please upload JPG/PNG.")
@@ -241,6 +258,18 @@ def generate_preview(
         if not pdfs:
             raise HTTPException(status_code=500, detail="PDF was not generated.")
         pdf_path = pdfs[0]
+        
+    # --- build downscaled colored preview (not embedded into PDF) ---
+    colored_candidates = sorted(out_dir.glob("*_pbn_colored.jpg"))
+    colored_preview_path = job_dir / "preview_colored_2048.jpg"
+    colored_url = None
+    
+    if colored_candidates:
+        try:
+            _downscale_long_side_jpeg(colored_candidates[0], colored_preview_path, long_side=2048)
+            colored_url = f"/download/{job_id}/colored"
+        except Exception:
+            colored_url = None
 
     dt = time.perf_counter() - t0
 
@@ -248,6 +277,7 @@ def generate_preview(
         {
             "job_id": job_id,
             "pdf_url": f"/download/{job_id}/pdf",
+            "colored_url": colored_url,
             "seconds": round(dt, 2),
             "meta": {
                 "detail": detail,
@@ -278,4 +308,16 @@ def download_pdf(job_id: str) -> FileResponse:
         path=str(pdf_path),
         media_type="application/pdf",
         filename="paint_by_numbers_A4.pdf",
+    )
+
+
+@app.get("/download/{job_id}/colored")
+def download_colored(job_id: str) -> FileResponse:
+    p = WORK_DIR / job_id / "preview_colored_2048.jpg"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Not found.")
+    return FileResponse(
+        path=str(p),
+        media_type="image/jpeg",
+        filename="colored_preview.jpg",
     )
