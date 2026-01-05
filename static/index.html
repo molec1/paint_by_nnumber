@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Paint-by-Numbers Preview (A4)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #0b0d10; color: #e9eef5; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 28px 16px 60px; }
+    .card { background: #12161c; border: 1px solid #1f2630; border-radius: 14px; padding: 18px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .row2 { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (max-width: 860px) { .row { grid-template-columns: 1fr; } }
+    h1 { font-size: 22px; margin: 0 0 10px; }
+    p { margin: 8px 0 0; color: #b8c2d1; line-height: 1.35; }
+    label { display: block; font-size: 13px; color: #b8c2d1; margin: 12px 0 6px; }
+    input[type="file"] { width: 100%; padding: 10px; background: #0e1217; border: 1px dashed #2a3442; border-radius: 12px; color: #b8c2d1; }
+    .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 560px) { .controls { grid-template-columns: 1fr; } }
+    .seg { display: flex; gap: 8px; flex-wrap: wrap; }
+    .seg button {
+      border: 1px solid #2a3442; background: #0e1217; color: #d7e0ee;
+      padding: 8px 10px; border-radius: 999px; cursor: pointer; font-size: 13px;
+    }
+    .seg button.active { background: #1b2430; border-color: #3a4a60; }
+    .chk { display: flex; gap: 10px; align-items: center; margin-top: 10px; color: #b8c2d1; font-size: 13px; }
+    .btn {
+      margin-top: 14px; width: 100%; padding: 12px 14px; border-radius: 12px;
+      background: #2a79ff; border: none; color: white; font-weight: 600; cursor: pointer;
+    }
+    .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status { margin-top: 12px; font-size: 13px; color: #b8c2d1; white-space: pre-wrap; }
+    .pill { display: inline-block; padding: 4px 8px; border-radius: 999px; background: #0e1217; border: 1px solid #2a3442; font-size: 12px; color: #b8c2d1; }
+    .upsell { margin-top: 14px; padding: 12px; border-radius: 12px; border: 1px solid #2a3442; background: #0e1217; color: #b8c2d1; }
+    a { color: #8cb3ff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Paint-by-numbers preview (A4)</h1>
+      <p>Upload a photo, pick a preset, generate a printable A4 PDF. If you like it, you can later regenerate in a bigger format.</p>
+
+      <div class="row" style="margin-top:16px;">
+        <div class="card" style="padding:14px;">
+          <label>1) Upload image (JPG/PNG, up to 15 MB)</label>
+          <input id="file" type="file" accept="image/jpeg,image/png" />
+
+          <label style="margin-top:14px;">2) Detail level</label>
+          <div class="seg" id="detailSeg">
+            <button data-value="easy">Easy (4 mm)</button>
+            <button data-value="medium" class="active">Medium (2 mm)</button>
+            <button data-value="hard">Hard (1.5 mm)</button>
+          </div>
+
+          <label style="margin-top:14px;">3) Colors</label>
+          <div class="seg" id="colorsSeg"></div>
+
+          <div class="chk">
+            <input id="autoCrop" type="checkbox" />
+            <div>Auto crop to A4 (cover)</div>
+          </div>
+
+          <div class="chk">
+            <input id="autoSat" type="checkbox" />
+            <div>Auto saturation (gentle)</div>
+          </div>
+
+          <button id="go" class="btn" disabled>Generate A4 preview</button>
+          <div id="status" class="status"></div>
+        </div>
+
+        <div class="card" style="padding:14px;">
+          <div style="display:flex; gap:10px; align-items:center; justify-content:space-between;">
+            <div>Result</div>
+            <span id="meta" class="pill">Waiting for upload</span>
+          </div>
+
+          <div style="margin-top:12px;">
+            <a id="downloadLink" href="#" style="display:none; font-weight:600;">Download PDF (A4)</a>
+          </div>
+
+          <div class="upsell">
+            <div style="font-weight:600; color:#d7e0ee;">Want it larger?</div>
+            <div style="margin-top:6px;">
+              Generate A3/A2 later as a paid upgrade (same settings, higher resolution).
+            </div>
+          </div>
+
+          <div style="margin-top:12px; font-size:12px; color:#7f8ba0;">
+            Tip: if the result looks good as A4, it usually scales nicely to A3/A2.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const fileEl = document.getElementById("file");
+  const goEl = document.getElementById("go");
+  const statusEl = document.getElementById("status");
+  const metaEl = document.getElementById("meta");
+  const downloadLink = document.getElementById("downloadLink");
+
+  let detail = "medium";
+  let colors = null;
+  let orientation = null; // portrait / landscape
+
+  const portraitOptions = [15, 20, 25];
+  const landscapeOptions = [14, 21, 28];
+
+  function setStatus(s) { statusEl.textContent = s || ""; }
+
+  function setActive(segId, value) {
+    const seg = document.getElementById(segId);
+    [...seg.querySelectorAll("button")].forEach(b => {
+      b.classList.toggle("active", b.dataset.value === value);
+    });
+  }
+
+  function renderColorsSeg() {
+    const colorsSeg = document.getElementById("colorsSeg");
+    colorsSeg.innerHTML = "";
+    const opts = (orientation === "landscape") ? landscapeOptions : portraitOptions;
+
+    opts.forEach(v => {
+      const btn = document.createElement("button");
+      btn.textContent = String(v);
+      btn.dataset.value = String(v);
+      if (colors === null) colors = opts[1]; // default middle option
+      btn.classList.toggle("active", Number(btn.dataset.value) === colors);
+      btn.onclick = () => {
+        colors = Number(btn.dataset.value);
+        [...colorsSeg.querySelectorAll("button")].forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+      };
+      colorsSeg.appendChild(btn);
+    });
+  }
+
+  document.getElementById("detailSeg").onclick = (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    detail = btn.dataset.value;
+    setActive("detailSeg", detail);
+  };
+
+  fileEl.addEventListener("change", async () => {
+    downloadLink.style.display = "none";
+    downloadLink.href = "#";
+    setStatus("");
+
+    const f = fileEl.files && fileEl.files[0];
+    if (!f) {
+      goEl.disabled = true;
+      metaEl.textContent = "Waiting for upload";
+      return;
+    }
+
+    // infer orientation client-side for correct colors options
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => {
+      orientation = (img.width > img.height) ? "landscape" : "portrait";
+      metaEl.textContent = `Detected: ${orientation}`;
+      renderColorsSeg();
+      goEl.disabled = false;
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      orientation = "portrait";
+      metaEl.textContent = "Detected: portrait";
+      renderColorsSeg();
+      goEl.disabled = false;
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  });
+
+  goEl.onclick = async () => {
+    const f = fileEl.files && fileEl.files[0];
+    if (!f) return;
+
+    goEl.disabled = true;
+    setStatus("Uploading and processing...\nThis may take ~10–30 seconds for complex photos.");
+
+    const fd = new FormData();
+    fd.append("image", f);
+    fd.append("detail", detail);
+    fd.append("colors", String(colors));
+    fd.append("orientation", orientation || "portrait");
+    fd.append("auto_crop", document.getElementById("autoCrop").checked ? "true" : "false");
+    fd.append("auto_saturation", document.getElementById("autoSat").checked ? "true" : "false");
+
+    try {
+      const r = await fetch("/api/preview", { method: "POST", body: fd });
+      const data = await r.json();
+      if (!r.ok) {
+        throw new Error(data.detail || "Request failed");
+      }
+      metaEl.textContent = `Done in ${data.seconds}s · A4`;
+      downloadLink.href = data.pdf_url;
+      downloadLink.style.display = "inline-block";
+      setStatus(`Generated.\nDetail: ${data.meta.detail} (${data.meta.min_feature_mm}mm)\nColors: ${data.meta.colors}\nCrop: ${data.meta.auto_crop}\nSaturation: ${data.meta.auto_saturation}`);
+    } catch (err) {
+      setStatus("Error: " + (err && err.message ? err.message : String(err)));
+      metaEl.textContent = "Failed";
+    } finally {
+      goEl.disabled = false;
+    }
+  };
+</script>
+</body>
+</html>

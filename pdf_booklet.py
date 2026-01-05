@@ -11,6 +11,7 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 import io
+from pathlib import Path
 
 def closest_css3_name(rgb_tuple: Tuple[int, int, int]) -> str:
     """
@@ -56,7 +57,7 @@ def read_palette_with_names(palette_csv_path: str):
     return colors
 
 
-@lru_cache(maxsize=8)
+#@lru_cache(maxsize=8)
 def load_image_reader(path: str) -> ImageReader:
     """
     Fast path:
@@ -66,6 +67,7 @@ def load_image_reader(path: str) -> ImageReader:
         so ReportLab embeds a compressed JPEG stream (much faster than embedding raw pixels).
     """
     # Try to detect EXIF orientation cheaply
+    path = str(Path(path).resolve())
     try:
         with Image.open(path) as im_probe:
             exif = im_probe.getexif()

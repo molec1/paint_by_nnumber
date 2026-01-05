@@ -1,5 +1,6 @@
 # Python venv
 venv/
+.venv/
 .env/
 __pycache__/
 
@@ -15,6 +16,7 @@ Thumbs.db
 
 # Project output directory
 output/
+work/
 
 # temp render/debug work
 *.tmp
