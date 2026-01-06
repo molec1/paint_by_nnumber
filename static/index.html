@@ -245,9 +245,20 @@
 
     try {
       const r = await fetch("/api/preview", { method: "POST", body: fd });
-      const data = await r.json();
+
       if (!r.ok) {
-        throw new Error(data.detail || "Request failed");
+        // покажем полезную ошибку
+        throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`);
+      }
+    
+      if (!text.trim()) {
+        throw new Error(`Empty response body (HTTP ${r.status})`);
+      }
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        throw new Error(`Invalid JSON: ${text.slice(0, 500)}`);
       }
       metaEl.textContent = `Done in ${data.seconds}s · A4`;
       downloadLink.href = data.pdf_url;

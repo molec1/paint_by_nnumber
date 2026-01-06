@@ -321,3 +321,11 @@ def download_colored(job_id: str) -> FileResponse:
         media_type="image/jpeg",
         filename="colored_preview.jpg",
     )
+
+
+@app.exception_handler(Exception)
+async def any_exc(request, exc):
+    return JSONResponse(
+        status_code=500,
+        content={"ok": False, "error": str(exc), "type": exc.__class__.__name__},
+    )
