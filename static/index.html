@@ -245,7 +245,7 @@
 
     try {
       const r = await fetch("/api/preview", { method: "POST", body: fd });
-
+      const text = await res.text();
       if (!r.ok) {
         // покажем полезную ошибку
         throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`);
