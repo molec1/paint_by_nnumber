@@ -5,3 +5,4 @@ reportlab>=3.6
 webcolors>=1.11,<2.0
 python-multipart
 uvicorn==0.39.0
+fastapi
