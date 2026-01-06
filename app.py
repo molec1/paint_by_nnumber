@@ -12,6 +12,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageEnhance, ImageOps
+import subprocess
+
 
 
 import pipeline  # uses your existing pipeline.main()
@@ -209,8 +211,6 @@ def generate_preview(
     if auto_crop_bool:
         target_ratio = A4_RATIO if portrait else 1 / A4_RATIO
         img = _center_crop_to_ratio(img, target_ratio)
-    else:
-        img = _contain_on_a4_canvas(img, portrait=portrait)
 
     # Write a temp input file for the existing pipeline
     job_id = uuid.uuid4().hex
@@ -239,12 +239,35 @@ def generate_preview(
     try:
         os.chdir(str(job_dir))
         # pipeline will create ./output
-        pipeline.main(
+        cmd = [
+            "python",
+            str(APP_DIR / "main.py"),
             str(input_path),
-            paper_size="A4",
-            num_colors=int(colors),
-            min_feature_mm=float(min_feature_mm),
+            "A4",
+            str(min_feature_mm),
+            str(int(colors)),
+        ]
+        
+        env = os.environ.copy()
+        env["OMP_NUM_THREADS"] = "1"
+        env["MKL_NUM_THREADS"] = "1"
+        env["OPENBLAS_NUM_THREADS"] = "1"
+        env["NUMEXPR_NUM_THREADS"] = "1"
+        env["PYTHONUNBUFFERED"] = "1"
+        
+        p = subprocess.run(
+            cmd,
+            cwd=str(job_dir),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
         )
+        
+        if p.returncode != 0:
+            tail = (p.stdout or "")[-4000:]
+            raise HTTPException(status_code=500, detail=f"Pipeline failed.\n{tail}")
+
     finally:
         os.chdir(old_cwd)
 
