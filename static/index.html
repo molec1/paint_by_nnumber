@@ -247,7 +247,6 @@
       const r = await fetch("/api/preview", { method: "POST", body: fd });
       const text = await r.text();
       if (!r.ok) {
-        // покажем полезную ошибку
         throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`);
       }
     
@@ -269,7 +268,6 @@
       const prevHint = document.getElementById("coloredHint");
         
       if (data.colored_url) {
-          // cache bust, чтобы браузер не показывал старый файл
           prevImg.src = data.colored_url + "?t=" + Date.now();
           prevImg.style.display = "block";
           prevHint.style.display = "block";

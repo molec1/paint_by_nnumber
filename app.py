@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Tuple
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageEnhance, ImageOps
@@ -329,3 +329,13 @@ async def any_exc(request, exc):
         status_code=500,
         content={"ok": False, "error": str(exc), "type": exc.__class__.__name__},
     )
+
+
+@app.get("/")
+def root():
+    return {"ok": True}
+
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
