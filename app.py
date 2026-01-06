@@ -6,7 +6,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -14,9 +14,6 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageEnhance, ImageOps
 import subprocess
 
-
-
-import pipeline  # uses your existing pipeline.main()
 
 APP_DIR = Path(__file__).resolve().parent
 WORK_DIR = APP_DIR / "work"
@@ -133,8 +130,7 @@ def _auto_saturate(img: Image.Image) -> Image.Image:
     return enhancer.enhance(1.10)  # 10% boost
 
 
-def _downscale_long_side_jpeg(in_path: Path, out_path: Path, long_side: int = 2048) -> None:
-    img = Image.open(str(in_path)).convert("RGB")
+def _downscale_image_long_side_jpeg(img: Image, long_side: int = 2048) -> None:
     w, h = img.size
     long_now = max(w, h)
 
@@ -143,6 +139,12 @@ def _downscale_long_side_jpeg(in_path: Path, out_path: Path, long_side: int = 20
         w2 = max(1, int(round(w * scale)))
         h2 = max(1, int(round(h * scale)))
         img = img.resize((w2, h2), resample=Image.LANCZOS)
+    return img
+
+
+def _downscale_long_side_jpeg(in_path: Path, out_path: Path, long_side: int = 2048) -> None:
+    img = Image.open(str(in_path))
+    img = _downscale_image_long_side_jpeg(img.convert("RGB"), long_side)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(out_path), format="JPEG", quality=90, optimize=True)
@@ -177,7 +179,9 @@ def generate_preview(
     try:
         img = Image.open(io.BytesIO(raw))
         img = ImageOps.exif_transpose(img)
+        img = _downscale_image_long_side_jpeg(img)
         img.load()
+        del raw
     except Exception:
         raise HTTPException(status_code=400, detail="Cannot read image. Please upload JPG/PNG.")
 
