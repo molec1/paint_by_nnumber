@@ -27,6 +27,8 @@ DETAIL_TO_MIN_FEATURE_MM = {
     "easy": 4.0,
     "medium": 2.0,
     "hard": 1.5,
+    "demo_a3": 1.0,
+    "demo_a2": 0.5,
 }
 
 PORTRAIT_COLORS = {15, 20, 25}
@@ -150,12 +152,6 @@ def _downscale_long_side_jpeg(in_path: Path, out_path: Path, long_side: int = 20
     img.save(str(out_path), format="JPEG", quality=90, optimize=True)
 
 
-@app.get("/", response_class=HTMLResponse)
-def index() -> HTMLResponse:
-    html_path = APP_DIR / "static" / "index.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
-
-
 @app.post("/api/preview")
 def generate_preview(
     image: UploadFile = File(...),
@@ -179,7 +175,9 @@ def generate_preview(
     try:
         img = Image.open(io.BytesIO(raw))
         img = ImageOps.exif_transpose(img)
-        img = _downscale_image_long_side_jpeg(img)
+        # Only for A4 tests!
+        # TODO: remove this!
+        img = _downscale_image_long_side_jpeg(img, 2048)
         img.load()
         del raw
     except Exception:
@@ -198,15 +196,7 @@ def generate_preview(
     if orientation not in ("portrait", "landscape"):
         raise HTTPException(status_code=400, detail="Invalid orientation.")
 
-    # Validate colors by orientation
-    if orientation == "portrait":
-        if colors not in PORTRAIT_COLORS:
-            raise HTTPException(status_code=400, detail="For portrait use 15/20/25 colors.")
-        portrait = True
-    else:
-        if colors not in LANDSCAPE_COLORS:
-            raise HTTPException(status_code=400, detail="For landscape use 14/21/28 colors.")
-        portrait = False
+    portrait = orientation == "portrait"
 
     # Pre-processing toggles
     if auto_sat_bool:
