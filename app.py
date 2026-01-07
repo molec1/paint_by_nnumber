@@ -152,6 +152,12 @@ def _downscale_long_side_jpeg(in_path: Path, out_path: Path, long_side: int = 20
     img.save(str(out_path), format="JPEG", quality=90, optimize=True)
 
 
+@app.get("/", response_class=HTMLResponse)
+def index() -> HTMLResponse:
+    html_path = APP_DIR / "static" / "index.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
 @app.post("/api/preview")
 def generate_preview(
     image: UploadFile = File(...),
@@ -346,11 +352,6 @@ async def any_exc(request, exc):
         status_code=500,
         content={"ok": False, "error": str(exc), "type": exc.__class__.__name__},
     )
-
-
-@app.get("/")
-def root():
-    return {"ok": True}
 
 
 @app.head("/")
