@@ -34,6 +34,47 @@ from pdf_booklet import build_pbn_pdf_booklet
 
 from pathlib import Path
 
+# --- Memory logging helper -------------------------------------------------
+
+ENABLE_MEM_LOG = True
+
+try:
+    import psutil  # type: ignore
+
+    _PROC = psutil.Process(os.getpid())
+except Exception:
+    psutil = None
+    _PROC = None
+
+_MAX_RSS_MB: float = 0.0
+
+
+def get_memory() -> None:
+    """
+    Log current RSS of the process in MB.
+
+    Works only if:
+      - env var PAINIT_MEM_LOG="1"
+      - psutil is installed and imported successfully
+
+    Prints something like:
+      [mem] [3] after smoothing: rss=410.3 MB (NEW MAX)
+    """
+    global _MAX_RSS_MB
+
+    if not ENABLE_MEM_LOG or _PROC is None:
+        return
+
+    try:
+        rss_bytes = _PROC.memory_info().rss
+    except Exception:
+        return
+
+    rss_mb = round(rss_bytes / (1024 * 1024))
+
+    return rss_mb
+    
+
 def build_output_paths(input_path: str, output_dir: str = "output") -> dict:
     """
     Generate output paths under output_dir.
@@ -160,7 +201,8 @@ def main(
     print_long_mm = get_paper_long_side_mm(paper_size)
     print(
         f"[0] Target paper: {paper_size} (long ≈ {print_long_mm:.0f} mm), "
-        f"num_colors={num_colors}, min_feature≈{min_feature_mm} mm"
+        f"num_colors={num_colors}, min_feature≈{min_feature_mm} mm, "
+        f"mem={get_memory()}"
     )
 
     # 1. Load and possibly resize image
@@ -175,7 +217,9 @@ def main(
     orig_arr = np.asarray(orig_img_resized).astype(np.uint8)
     H, W, _ = orig_arr.shape
     image_long_px = max(H, W)
-    print(f"[0] Input (effective): size: {W}x{H}, long={image_long_px}px")
+    del orig_img, orig_img_resized
+    print(f"[0] Input (effective): size: {W}x{H}, long={image_long_px}px, "
+          f"mem={get_memory()}")
 
     min_region_pixels = estimate_min_region_pixels(
         image_long_px=image_long_px,
@@ -193,7 +237,8 @@ def main(
     Image.fromarray(quant_arr, mode="RGB").save(paths["quant"])
     print(
         f"[1] KMeans quantization (Lab) -> {paths['quant']} "
-        f"({time.perf_counter() - t:.2f}s)"
+        f"({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
     )
     print(f"    Initial clusters: {len(palette_colors)}")
 
@@ -210,14 +255,17 @@ def main(
         orig_arr=orig_arr,
     )
 
-    print(f"[3] Cluster map smoothing ({time.perf_counter() - t:.2f}s)")
+    del cluster_id_raw, palette_colors, orig_arr
+    print(f"[3] Cluster map smoothing ({time.perf_counter() - t:.2f}s), "
+          f"mem={get_memory()}")
 
     # 4. First segmentation
     t = time.perf_counter()
     region_id_img, region_color_id, region_area = segment_regions_scipy(cluster_id_img)
     print(
         f"[4] First segmentation: total regions {len(region_color_id)} "
-        f"({time.perf_counter() - t:.2f}s)"
+        f"({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
     )
 
     # 6. Neighbour graph & merge small regions
@@ -229,9 +277,11 @@ def main(
         palette=palette_final,
         min_region_pixels=min_region_pixels,
         allow_fallback=True,
-    )
+    )    
+    del region_id_img, region_color_id, region_area
     print(
-        f"[6] Merge small regions ({time.perf_counter() - t:.2f}s)"
+        f"[6] Merge small regions ({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
     )
 
     # 7. Final clean-up segmentation
@@ -243,7 +293,8 @@ def main(
         return_regions=False,
     )
     print(
-        f"[7] Second segmentation: ({time.perf_counter() - t:.2f}s)"
+        f"[7] Second segmentation: ({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
     )
     # hard cleanup: no region smaller than min_region_pixels
     t = time.perf_counter()
@@ -253,21 +304,26 @@ def main(
         hard_min_pixels=min_region_pixels,
         max_iters=3,
     )
-    print(f"[7b] hard cleanup: ({time.perf_counter() - t:.2f}s)")
+    print(f"[7b] hard cleanup: ({time.perf_counter() - t:.2f}s), "
+          f"mem={get_memory()}")
     
     cluster_id_refined = cluster_id_hard
     palette_refined = palette_hard
 
     t = time.perf_counter()
-    final_regions = segment_final_regions_scipy(cluster_id_refined, connectivity4=CONNECTIVITY4)
-    print(f"[7c] Final regions for rendering: {len(final_regions)} ({time.perf_counter() - t:.2f}s)")
+    final_regions = segment_final_regions_scipy(cluster_id_refined, connectivity4=CONNECTIVITY4)    
+    del cluster_id_final, palette_merged, cluster_id_hard, palette_hard
+
+    print(f"[7c] Final regions for rendering: {len(final_regions)} ({time.perf_counter() - t:.2f}s), "
+          f"mem={get_memory()}")
     
     # 8. Palette ordering & numbering (based on final palette)
     t = time.perf_counter()
     color_id_to_paint_index, paint_palette = build_ordered_palette(palette_refined)
     print(
         f"[8] Palette ordering & numbering: {len(paint_palette)} "
-        f"({time.perf_counter() - t:.2f}s)"
+        f"({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
     )
 
     DPI = 300
@@ -298,7 +354,18 @@ def main(
     outline_img.save(paths["outline"], dpi=(DPI, DPI))
     colored_img.save(paths["colored"], dpi=(DPI, DPI))
     
-    print(f"[9] Rendering ({time.perf_counter() - t:.2f}s)")
+    del (
+        cluster_id_img,
+        cluster_id_refined,
+        labels_big,
+        final_regions,
+        colored_img,
+        outline_img,
+    )
+    import gc
+    gc.collect()
+    print(f"[9] Rendering ({time.perf_counter() - t:.2f}s), "
+          f"mem={get_memory()}")
 
     save_palette_csv(paths["palette_csv"], paint_palette)
     t = time.perf_counter()
@@ -314,6 +381,8 @@ def main(
         pdf_name=paths['pdf'],
         paper_size=paper_size,
     )
-    print(f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s)")
+    print(f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s), "
+          f"mem={get_memory()}")
 
-    print(f"[done] Total time: {time.perf_counter() - t0:.2f}s")
+    print(f"[done] Total time: {time.perf_counter() - t0:.2f}s, "
+          f"mem={get_memory()}")

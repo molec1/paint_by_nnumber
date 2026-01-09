@@ -4,6 +4,7 @@ import io
 import os
 import re
 import time
+import sys
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -217,18 +218,9 @@ def generate_preview(
     job_dir = WORK_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    in_name = _safe_filename(image.filename or "upload.jpg")
-    # Keep extension sane
-    ext = Path(in_name).suffix.lower()
-    if ext not in (".jpg", ".jpeg", ".png"):
-        ext = ".jpg"
-    input_path = job_dir / f"input{ext}"
-
-    # Save as JPEG/PNG
-    if ext in (".jpg", ".jpeg"):
-        img.save(str(input_path), format="JPEG", quality=95)
-    else:
-        img.save(str(input_path), format="PNG", compress_level=6)
+    # Always save internal input as JPEG
+    input_path = job_dir / "input.jpg"
+    img.save(str(input_path), format="JPEG", quality=99)
 
     min_feature_mm = DETAIL_TO_MIN_FEATURE_MM[detail]
 
@@ -236,14 +228,15 @@ def generate_preview(
     # Note: pipeline writes to ./output by default. We want per-job output:
     # easiest MVP: temporarily chdir into job_dir and set output to "output".
     old_cwd = os.getcwd()
+    paper_size = "A4"
     try:
         os.chdir(str(job_dir))
         # pipeline will create ./output
         cmd = [
-            "python",
+            sys.executable,
             str(APP_DIR / "main.py"),
             str(input_path),
-            "A4",
+            paper_size,
             str(min_feature_mm),
             str(int(colors)),
         ]
@@ -255,35 +248,45 @@ def generate_preview(
         env["NUMEXPR_NUM_THREADS"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         
-        p = subprocess.run(
-            cmd,
-            cwd=str(job_dir),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
+        log_path = job_dir / "pipeline.log"
+        with log_path.open("w", encoding="utf-8") as log_f:
+            p = subprocess.run(
+                cmd,
+                cwd=str(job_dir),
+                env=env,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
         
         if p.returncode != 0:
-            tail = (p.stdout or "")[-4000:]
+            tail = ""
+            try:
+                tail = log_path.read_text(encoding="utf-8")[-4000:]
+            except Exception:
+                pass
             raise HTTPException(status_code=500, detail=f"Pipeline failed.\n{tail}")
+
 
     finally:
         os.chdir(old_cwd)
 
-    # Find produced PDF (pipeline uses output/{stem}_booklet.pdf)
-    out_dir = job_dir / "output"
-    # In your pipeline, base = input_path.stem, so "input_booklet.pdf"
-    pdf_path = out_dir / "input_booklet.pdf"
-    if not pdf_path.exists():
-        # Fallback: take any *_booklet.pdf
-        pdfs = sorted(out_dir.glob("*_booklet.pdf"))
-        if not pdfs:
-            raise HTTPException(status_code=500, detail="PDF was not generated.")
-        pdf_path = pdfs[0]
-        
+        out_dir = job_dir / "output"
+
+    # --- Optional PDF (only for non-demo A4 modes) ---
+    pdf_url = None
+    if detail in ("easy", "medium", "hard"):
+        pdf_path = out_dir / "input_booklet.pdf"
+        if not pdf_path.exists():
+            pdfs = sorted(out_dir.glob("*_booklet.pdf"))
+            if not pdfs:
+                raise HTTPException(status_code=500, detail="PDF was not generated.")
+            pdf_path = pdfs[0]
+        pdf_url = f"/download/{job_id}/pdf"
+
     # --- build downscaled colored preview (not embedded into PDF) ---
     colored_candidates = sorted(out_dir.glob("*_pbn_colored.jpg"))
+
     colored_preview_path = job_dir / "preview_colored_2048.jpg"
     colored_url = None
     
@@ -299,7 +302,7 @@ def generate_preview(
     return JSONResponse(
         {
             "job_id": job_id,
-            "pdf_url": f"/download/{job_id}/pdf",
+            "pdf_url": pdf_url,  # None for demo_a3/demo_a2
             "colored_url": colored_url,
             "seconds": round(dt, 2),
             "meta": {
@@ -309,11 +312,12 @@ def generate_preview(
                 "orientation": orientation,
                 "auto_crop": auto_crop_bool,
                 "auto_saturation": auto_sat_bool,
-                "paper": "A4",
+                "paper": paper_size,
                 "upload_limit_mb": MAX_UPLOAD_MB,
             },
         }
     )
+
 
 
 @app.get("/download/{job_id}/pdf")
