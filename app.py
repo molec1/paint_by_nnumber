@@ -285,11 +285,14 @@ def generate_preview(
         pdf_url = f"/download/{job_id}/pdf"
 
     # --- build downscaled colored preview (not embedded into PDF) ---
-    colored_candidates = sorted(out_dir.glob("*_pbn_colored.jpg"))
+    colored_candidates = []
+    for ext in ("jpg", "jpeg", "JPG", "JPEG"):
+        colored_candidates.extend(out_dir.glob(f"*_pbn_colored.{ext}"))
+    colored_candidates = sorted(colored_candidates)
 
     colored_preview_path = job_dir / "preview_colored_2048.jpg"
-    colored_url = None
-    
+    colored_url: Optional[str] = None
+
     if colored_candidates:
         try:
             _downscale_long_side_jpeg(colored_candidates[0], colored_preview_path, long_side=2048)
