@@ -167,12 +167,17 @@ def generate_preview(
     auto_crop: str = Form("false"),
     auto_saturation: str = Form("false"),
     orientation: Optional[str] = Form(None),  # portrait/landscape; optional
+    paper: str = Form("A4"),  # A4 / A3 / A2, default is A4
 ) -> JSONResponse:
     t0 = time.perf_counter()
 
     detail = (detail or "").strip().lower()
     if detail not in DETAIL_TO_MIN_FEATURE_MM:
         raise HTTPException(status_code=400, detail="Invalid detail level.")
+
+    paper = (paper or "A4").upper()
+    if paper not in ("A4", "A3", "A2", "A1"):
+        paper = "A4"
 
     auto_crop_bool = str(auto_crop).lower() == "true"
     auto_sat_bool = str(auto_saturation).lower() == "true"
@@ -228,7 +233,6 @@ def generate_preview(
     # Note: pipeline writes to ./output by default. We want per-job output:
     # easiest MVP: temporarily chdir into job_dir and set output to "output".
     old_cwd = os.getcwd()
-    paper_size = "A4"
     try:
         os.chdir(str(job_dir))
         # pipeline will create ./output
@@ -236,7 +240,7 @@ def generate_preview(
             sys.executable,
             str(APP_DIR / "main.py"),
             str(input_path),
-            paper_size,
+            paper,
             str(min_feature_mm),
             str(int(colors)),
         ]
@@ -315,7 +319,7 @@ def generate_preview(
                 "orientation": orientation,
                 "auto_crop": auto_crop_bool,
                 "auto_saturation": auto_sat_bool,
-                "paper": paper_size,
+                "paper": paper,
                 "upload_limit_mb": MAX_UPLOAD_MB,
             },
         }

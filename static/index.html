@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Paint-by-Numbers Preview (A4)</title>
+  <title>Paint-by-Numbers Preview</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background: #0b0d10; color: #e9eef5; }
     .wrap { max-width: 980px; margin: 0 auto; padding: 28px 16px 60px; }
@@ -45,7 +45,7 @@
       </p>
       <p style="margin-top:4px; font-size:12px; color:#7f8ba0;">
         Portraits, strong gradients and very small details are not recommended – they tend to produce noisy regions.
-        Expect to add some fine details by hand; that's part of the creative process rather than a bug.
+        Expect to add some fine details by hand; that is part of the creative process rather than a bug.
       </p>
 
       <div class="row" style="margin-top:16px;">
@@ -86,25 +86,43 @@
           </div>
 
           <div style="margin-top:12px;">
-            <a id="downloadLink" href="#" style="display:none; font-weight:600;">Download PDF (A4)</a>
+            <a id="downloadLink" href="#" style="display:none; font-weight:600;">Download PDF</a>
           </div>
           
           <div style="margin-top:12px;">
-              <img id="coloredPreview"
-                   src=""
-                   alt="Colored preview"
-                   style="display:none; width:100%; border-radius:12px; border:1px solid #2a3442; cursor: zoom-in;" />
+            <img id="coloredPreview"
+                 src=""
+                 alt="Colored preview"
+                 style="display:none; width:100%; border-radius:12px; border:1px solid #2a3442; cursor: zoom-in;" />
 
-              <div id="coloredHint" style="display:none; margin-top:8px; font-size:12px; color:#7f8ba0;">
-                Colored preview (downscaled). This is how it looks if you color it perfectly.
-              </div>
+            <div id="coloredHint" style="display:none; margin-top:8px; font-size:12px; color:#7f8ba0;">
+              Colored preview (downscaled). This is how it looks if you color it perfectly.
+            </div>
           </div>
 
           <div class="upsell">
             <div style="font-weight:600; color:#d7e0ee;">Want it larger?</div>
             <div style="margin-top:6px;">
-              Generate A3/A2 later as a paid upgrade (same settings, higher resolution).
+              Full-size A3 and A2 posters will be paid in the future. During beta you can generate them for free after trying a demo.
             </div>
+          </div>          
+          
+          <div id="demoActions" style="display:none; margin-top:10px; font-size:13px; color:#d7e0ee;">
+            <div id="demoText"></div>
+            <button
+              id="generateA3Btn"
+              class="btn"
+              style="margin-top:8px; display:none; background:#1b3b7a;"
+            >
+              Generate A3 (beta – free)
+            </button>
+            <button
+              id="generateA2Btn"
+              class="btn"
+              style="margin-top:8px; display:none; background:#1b3b7a;"
+            >
+              Generate A2 (beta – free)
+            </button>
           </div>
 
           <div style="margin-top:12px; font-size:12px; color:#7f8ba0;">
@@ -114,226 +132,314 @@
       </div>
     </div>
   </div>
-<div id="lightbox" style="
-  display:none;
-  position:fixed;
-  inset:0;
-  background:rgba(0,0,0,0.86);
-  z-index:9999;
-  padding:24px;
-">
-  <div style="position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">
-    <button id="lightboxClose" aria-label="Close" style="
-      position:absolute;
-      top:10px;
-      right:10px;
-      width:44px;
-      height:44px;
-      border-radius:12px;
-      border:1px solid #2a3442;
-      background:#0e1217;
-      color:#e9eef5;
-      font-size:20px;
-      cursor:pointer;
-    ">✕</button>
 
-    <img id="lightboxImg" src="" alt="Preview large" style="
-      max-width:100%;
-      max-height:100%;
-      border-radius:14px;
-      border:1px solid #2a3442;
-      background:#0e1217;
-      object-fit:contain;
-    "/>
+  <div id="lightbox" style="
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,0.86);
+    z-index:9999;
+    padding:24px;
+  ">
+    <div style="position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center;">
+      <button id="lightboxClose" aria-label="Close" style="
+        position:absolute;
+        top:10px;
+        right:10px;
+        width:44px;
+        height:44px;
+        border-radius:12px;
+        border:1px solid #2a3442;
+        background:#0e1217;
+        color:#e9eef5;
+        font-size:20px;
+        cursor:pointer;
+      ">✕</button>
+
+      <img id="lightboxImg" src="" alt="Preview large" style="
+        max-width:100%;
+        max-height:100%;
+        border-radius:14px;
+        border:1px solid #2a3442;
+        background:#0e1217;
+        object-fit:contain;
+      "/>
+    </div>
   </div>
-</div>
 
-<script>
-  const fileEl = document.getElementById("file");
-  const goEl = document.getElementById("go");
-  const statusEl = document.getElementById("status");
-  const metaEl = document.getElementById("meta");
-  const downloadLink = document.getElementById("downloadLink");
+  <script>
+    const fileEl = document.getElementById("file");
+    const goEl = document.getElementById("go");
+    const statusEl = document.getElementById("status");
+    const metaEl = document.getElementById("meta");
+    const downloadLink = document.getElementById("downloadLink");
 
-  let detail = "medium";
-  let colors = null;
-  let orientation = null; // portrait / landscape
+    const demoActionsEl = document.getElementById("demoActions");
+    const demoTextEl = document.getElementById("demoText");
+    const generateA3Btn = document.getElementById("generateA3Btn");
+    const generateA2Btn = document.getElementById("generateA2Btn");
 
-  const portraitOptions = [15, 20, 25];
-  const landscapeOptions = [14, 21, 28];
+    let detail = "medium";
+    let colors = null;
+    let orientation = null; // portrait / landscape
+    let paper = "A4";       // A4 by default, can be switched to A3/A2
 
-  function setStatus(s) { statusEl.textContent = s || ""; }
+    const portraitOptions = [15, 20, 25];
+    const landscapeOptions = [14, 21, 28];
 
-  function setActive(segId, value) {
-    const seg = document.getElementById(segId);
-    [...seg.querySelectorAll("button")].forEach(b => {
-      b.classList.toggle("active", b.dataset.value === value);
-    });
-  }
-
-  function renderColorsSeg() {
-    const colorsSeg = document.getElementById("colorsSeg");
-    colorsSeg.innerHTML = "";
-    const opts = (orientation === "landscape") ? landscapeOptions : portraitOptions;
-
-    opts.forEach(v => {
-      const btn = document.createElement("button");
-      btn.textContent = String(v);
-      btn.dataset.value = String(v);
-      if (colors === null) colors = opts[1]; // default middle option
-      btn.classList.toggle("active", Number(btn.dataset.value) === colors);
-      btn.onclick = () => {
-        colors = Number(btn.dataset.value);
-        [...colorsSeg.querySelectorAll("button")].forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-      };
-      colorsSeg.appendChild(btn);
-    });
-  }
-
-  document.getElementById("detailSeg").onclick = (e) => {
-    const btn = e.target.closest("button");
-    if (!btn) return;
-    detail = btn.dataset.value;
-    setActive("detailSeg", detail);
-  };
-
-  fileEl.addEventListener("change", async () => {
-    downloadLink.style.display = "none";
-    downloadLink.href = "#";
-    setStatus("");
-
-    const f = fileEl.files && fileEl.files[0];
-    if (!f) {
-      goEl.disabled = true;
-      metaEl.textContent = "Waiting for upload";
-      return;
+    function setStatus(s) {
+      statusEl.textContent = s || "";
     }
 
-    // infer orientation client-side for correct colors options
-    const url = URL.createObjectURL(f);
-    const img = new Image();
-    img.onload = () => {
-      orientation = (img.width > img.height) ? "landscape" : "portrait";
-      metaEl.textContent = `Detected: ${orientation}`;
-      renderColorsSeg();
-      goEl.disabled = false;
-      URL.revokeObjectURL(url);
+    function setActive(segId, value) {
+      const seg = document.getElementById(segId);
+      [...seg.querySelectorAll("button")].forEach(b => {
+        b.classList.toggle("active", b.dataset.value === value);
+      });
+    }
+
+    function resetDemoUi() {
+      demoActionsEl.style.display = "none";
+      demoTextEl.textContent = "";
+      generateA3Btn.style.display = "none";
+      generateA2Btn.style.display = "none";
+
+      // Ensure demo detail buttons are visible again if they were hidden before
+      document
+        .querySelectorAll('#detailSeg button[data-value="demo_a3"], #detailSeg button[data-value="demo_a2"]')
+        .forEach(b => {
+          b.style.display = "";
+        });
+    }
+
+    function renderColorsSeg() {
+      const colorsSeg = document.getElementById("colorsSeg");
+      colorsSeg.innerHTML = "";
+      const opts = (orientation === "landscape") ? landscapeOptions : portraitOptions;
+
+      opts.forEach(v => {
+        const btn = document.createElement("button");
+        btn.textContent = String(v);
+        btn.dataset.value = String(v);
+        if (colors === null) {
+          colors = opts[1]; // default middle option
+        }
+        btn.classList.toggle("active", Number(btn.dataset.value) === colors);
+        btn.onclick = () => {
+          colors = Number(btn.dataset.value);
+          [...colorsSeg.querySelectorAll("button")].forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+        };
+        colorsSeg.appendChild(btn);
+      });
+    }
+
+    document.getElementById("detailSeg").onclick = (e) => {
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      detail = btn.dataset.value;
+      setActive("detailSeg", detail);
     };
-    img.onerror = () => {
-      orientation = "portrait";
-      metaEl.textContent = "Detected: portrait";
-      renderColorsSeg();
-      goEl.disabled = false;
-      URL.revokeObjectURL(url);
-    };
-    img.src = url;
-    
-    const prevImg = document.getElementById("coloredPreview");
-    const prevHint = document.getElementById("coloredHint");
-    prevImg.style.display = "none";
-    prevImg.src = "";
-    prevHint.style.display = "none";
 
-  });
+    fileEl.addEventListener("change", async () => {
+      downloadLink.style.display = "none";
+      downloadLink.href = "#";
+      setStatus("");
+      paper = "A4";
+      resetDemoUi();
 
-  goEl.onclick = async () => {
-    const f = fileEl.files && fileEl.files[0];
-    if (!f) return;
-
-    goEl.disabled = true;
-    setStatus("Uploading and processing...\nThis may take ~10–30 seconds for complex photos.");
-
-    const fd = new FormData();
-    fd.append("image", f);
-    fd.append("detail", detail);
-    fd.append("colors", String(colors));
-    fd.append("orientation", orientation || "portrait");
-    fd.append("auto_crop", document.getElementById("autoCrop").checked ? "true" : "false");
-    fd.append("auto_saturation", document.getElementById("autoSat").checked ? "true" : "false");
-
-    try {
-      const r = await fetch("/api/preview", { method: "POST", body: fd });
-      const text = await r.text();
-      if (!r.ok) {
-        throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`);
+      const f = fileEl.files && fileEl.files[0];
+      if (!f) {
+        goEl.disabled = true;
+        metaEl.textContent = "Waiting for upload";
+        return;
       }
-    
-      if (!text.trim()) {
-        throw new Error(`Empty response body (HTTP ${r.status})`);
-      }
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        throw new Error(`Invalid JSON: ${text.slice(0, 500)}`);
-      }
-      metaEl.textContent = `Done in ${data.seconds}s · A4`;
-      downloadLink.href = data.pdf_url;
-      downloadLink.style.display = "inline-block";
-      setStatus(`Generated.\nDetail: ${data.meta.detail} (${data.meta.min_feature_mm}mm)\nColors: ${data.meta.colors}\nCrop: ${data.meta.auto_crop}\nSaturation: ${data.meta.auto_saturation}`);
-      
+
+      const url = URL.createObjectURL(f);
+      const img = new Image();
+      img.onload = () => {
+        orientation = (img.width > img.height) ? "landscape" : "portrait";
+        metaEl.textContent = `Detected: ${orientation}`;
+        renderColorsSeg();
+        goEl.disabled = false;
+        URL.revokeObjectURL(url);
+      };
+      img.onerror = () => {
+        orientation = "portrait";
+        metaEl.textContent = "Detected: portrait";
+        renderColorsSeg();
+        goEl.disabled = false;
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+
       const prevImg = document.getElementById("coloredPreview");
       const prevHint = document.getElementById("coloredHint");
-        
-      if (data.colored_url) {
+      prevImg.style.display = "none";
+      prevImg.src = "";
+      prevHint.style.display = "none";
+    });
+
+    async function runPreview() {
+      const f = fileEl.files && fileEl.files[0];
+      if (!f) {
+        setStatus("Please upload an image first.");
+        return;
+      }
+
+      goEl.disabled = true;
+      setStatus("Uploading and processing...\nThis may take ~10–30 seconds for complex photos.");
+      downloadLink.style.display = "none";
+      downloadLink.href = "#";
+      resetDemoUi();
+
+      const fd = new FormData();
+      fd.append("image", f);
+      fd.append("detail", detail);
+      fd.append("colors", String(colors));
+      fd.append("orientation", orientation || "portrait");
+      fd.append("auto_crop", document.getElementById("autoCrop").checked ? "true" : "false");
+      fd.append("auto_saturation", document.getElementById("autoSat").checked ? "true" : "false");
+      fd.append("paper", paper);
+
+      try {
+        const r = await fetch("/api/preview", { method: "POST", body: fd });
+        const text = await r.text();
+        if (!r.ok) {
+          throw new Error(`HTTP ${r.status}: ${text.slice(0, 500)}`);
+        }
+
+        if (!text.trim()) {
+          throw new Error(`Empty response body (HTTP ${r.status})`);
+        }
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          throw new Error(`Invalid JSON: ${text.slice(0, 500)}`);
+        }
+
+        const metaPaper = (data.meta && data.meta.paper) ? data.meta.paper : "A4";
+        metaEl.textContent = `Done in ${data.seconds}s · ${metaPaper}`;
+
+        if (data.pdf_url) {
+          downloadLink.href = data.pdf_url;
+          downloadLink.textContent = `Download PDF (${metaPaper})`;
+          downloadLink.style.display = "inline-block";
+        } else {
+          downloadLink.href = "#";
+          downloadLink.style.display = "none";
+        }
+
+        setStatus(
+          `Generated.\nDetail: ${data.meta.detail} (${data.meta.min_feature_mm} mm)\n` +
+          `Colors: ${data.meta.colors}\nPaper: ${metaPaper}\n` +
+          `Auto crop: ${data.meta.auto_crop}\nSaturation: ${data.meta.auto_saturation}`
+        );
+
+        const prevImg = document.getElementById("coloredPreview");
+        const prevHint = document.getElementById("coloredHint");
+
+        if (data.colored_url) {
           prevImg.src = data.colored_url + "?t=" + Date.now();
           prevImg.style.display = "block";
           prevHint.style.display = "block";
-      } else {
+        } else {
           prevImg.style.display = "none";
           prevImg.src = "";
           prevHint.style.display = "none";
+        }
+
+        if (data.meta.detail === "demo_a3" || data.meta.detail === "demo_a2") {
+          demoActionsEl.style.display = "block";
+
+          if (data.meta.detail === "demo_a3") {
+            demoTextEl.textContent =
+              "Demo A3 preview. Full-size A3 poster would normally cost $0.99. During beta it is free – click the button below to generate the real A3 PDF.";
+            generateA3Btn.style.display = "inline-block";
+            generateA2Btn.style.display = "none";
+          } else {
+            demoTextEl.textContent =
+              "Demo A2 preview. Full-size A2 poster would normally cost $1.99. During beta it is free – click the button below to generate the real A2 PDF.";
+            generateA2Btn.style.display = "inline-block";
+            generateA3Btn.style.display = "none";
+          }
+
+          document
+            .querySelectorAll('#detailSeg button[data-value="demo_a3"], #detailSeg button[data-value="demo_a2"]')
+            .forEach(b => {
+              b.style.display = "none";
+            });
+
+          paper = "A4";
+        }
+
+      } catch (err) {
+        setStatus("Error: " + (err && err.message ? err.message : String(err)));
+        metaEl.textContent = "Failed";
+      } finally {
+        goEl.disabled = false;
+      }
+    }
+
+    goEl.addEventListener("click", (e) => {
+      e.preventDefault();
+      runPreview();
+    });
+
+    generateA3Btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      setStatus("Good news: during beta you do not need to pay. Generating A3 poster now...");
+      paper = "A3";
+      detail = "medium";
+      setActive("detailSeg", detail);
+      await runPreview();
+    });
+
+    generateA2Btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      setStatus("Good news: during beta you do not need to pay. Generating A2 poster now...");
+      paper = "A2";
+      detail = "medium";
+      setActive("detailSeg", detail);
+      await runPreview();
+    });
+
+    (function setupLightbox() {
+      const lb = document.getElementById("lightbox");
+      const lbImg = document.getElementById("lightboxImg");
+      const lbClose = document.getElementById("lightboxClose");
+      const prevImg = document.getElementById("coloredPreview");
+
+      function openLightbox(src) {
+        if (!src) return;
+        lbImg.src = src;
+        lb.style.display = "block";
+        document.body.style.overflow = "hidden";
       }
 
-    } catch (err) {
-      setStatus("Error: " + (err && err.message ? err.message : String(err)));
-      metaEl.textContent = "Failed";
-    } finally {
-      goEl.disabled = false;
-    }
-  };
-(function setupLightbox() {
-  const lb = document.getElementById("lightbox");
-  const lbImg = document.getElementById("lightboxImg");
-  const lbClose = document.getElementById("lightboxClose");
-  const prevImg = document.getElementById("coloredPreview");
+      function closeLightbox() {
+        lb.style.display = "none";
+        lbImg.src = "";
+        document.body.style.overflow = "";
+      }
 
-  function openLightbox(src) {
-    if (!src) return;
-    lbImg.src = src;
-    lb.style.display = "block";
-    document.body.style.overflow = "hidden";
-  }
+      prevImg.addEventListener("click", () => {
+        openLightbox(prevImg.src);
+      });
 
-  function closeLightbox() {
-    lb.style.display = "none";
-    lbImg.src = "";
-    document.body.style.overflow = "";
-  }
+      lbClose.addEventListener("click", closeLightbox);
 
-  // click preview -> open
-  prevImg.addEventListener("click", () => {
-    // open the same URL (already downscaled to 2048 long side)
-    openLightbox(prevImg.src);
-  });
+      lb.addEventListener("click", (e) => {
+        if (e.target === lb) closeLightbox();
+      });
 
-  // close button
-  lbClose.addEventListener("click", closeLightbox);
-
-  // click outside image closes
-  lb.addEventListener("click", (e) => {
-    if (e.target === lb) closeLightbox();
-  });
-
-  // ESC closes
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && lb.style.display === "block") {
-      closeLightbox();
-    }
-  });
-})();
-
-</script>
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && lb.style.display === "block") {
+          closeLightbox();
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
