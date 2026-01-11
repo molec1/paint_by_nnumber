@@ -4,6 +4,7 @@ from typing import List, Tuple
 
 import numpy as np
 from sklearn.cluster import KMeans
+from sklearn.tree import DecisionTreeClassifier
 
 from colorspace import rgb_to_lab, lab_to_rgb
 from smoothing import estimate_smoothing_radius_px, smooth_labels_radius_scipy
@@ -16,35 +17,63 @@ def quantize_kmeans_lab(
     """
     KMeans quantization in Lab space.
 
-    Returns
-    -------
-    cluster_id_raw : np.ndarray (H, W)
-        Cluster ID for each pixel.
-    palette_colors : list of (R, G, B)
-        RGB palette centers.
-    quant_arr : np.ndarray (H, W, 3)
-        Quantized RGB image.
+    Steps:
+      1) Convert full image to Lab.
+      2) Take a random subset of pixels for fitting k-means.
+      3) Fit k-means on this subset.
+      4) Train a decision tree on (Lab_subset -> kmeans.labels_).
+      5) Use the tree to predict cluster IDs for all pixels (in batches).
+      6) Build RGB palette and quantized image.
+
+    This avoids building any large (N x K) distance matrices.
     """
     H, W, _ = orig_arr.shape
 
-    lab = rgb_to_lab(orig_arr)
-    flat_lab = lab.reshape(-1, 3)
-
+    # 1) RGB -> Lab (float32)
+    lab = rgb_to_lab(orig_arr)          # (H, W, 3) float32
+    flat_lab = lab.reshape(-1, 3)       # view, (N, 3)
     n_pixels = flat_lab.shape[0]
+
+    # 2) Sample subset for k-means and tree training
     max_sample = 200_000
     if n_pixels > max_sample:
-        idx = np.random.choice(n_pixels, max_sample, replace=False)
-        sample = flat_lab[idx]
+        sample_idx = np.random.choice(n_pixels, max_sample, replace=False)
+        sample_lab = flat_lab[sample_idx]
     else:
-        sample = flat_lab
+        sample_lab = flat_lab
 
-    kmeans = KMeans(n_clusters=num_colors, n_init=5, random_state=42)
-    kmeans.fit(sample)
+    # 3) Fit k-means on the subset
+    kmeans = KMeans(
+        n_clusters=num_colors,
+        n_init=2,
+        random_state=42,
+    )
+    kmeans.fit(sample_lab)
 
-    labels = kmeans.predict(flat_lab)          # (N,)
-    centers_lab = kmeans.cluster_centers_      # (K, 3)
+    # cluster labels for the subset (training targets for the tree)
+    sample_labels = kmeans.labels_.astype(np.int8, copy=False)
 
-    cluster_id_raw = labels.reshape(H, W)      # 0..K-1
+    # 4) Train decision tree on (Lab -> cluster_id)
+    tree = DecisionTreeClassifier(
+        max_depth=12,
+        min_samples_leaf=50,
+        random_state=42,
+    )
+    tree.fit(sample_lab, sample_labels)
+
+    # 5) Predict cluster for all pixels using the tree (batched for safety)
+    labels_all = np.empty(n_pixels, dtype=np.int8)
+    batch_size = 1_000_000
+
+    for start in range(0, n_pixels, batch_size):
+        end = min(n_pixels, start + batch_size)
+        block = flat_lab[start:end]         # (B, 3) float32
+        labels_all[start:end] = tree.predict(block).astype(np.int8, copy=False)
+
+    cluster_id_raw = labels_all.reshape(H, W)
+
+    # 6) Palette from k-means centers
+    centers_lab = kmeans.cluster_centers_.astype(np.float32, copy=False)   # (K, 3)
     centers_rgb = lab_to_rgb(centers_lab)      # (K, 3) uint8
     palette_colors = [tuple(map(int, c)) for c in centers_rgb]
 

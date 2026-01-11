@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
+import csv
+import threading
 
 from config import (
     DEFAULT_NUM_COLORS,
@@ -32,8 +35,6 @@ from palette_utils import (
 from rendering import render_outline_and_colored_highres, draw_numbers_on_outline_highres
 from pdf_booklet import build_pbn_pdf_booklet
 
-from pathlib import Path
-
 # --- Memory logging helper -------------------------------------------------
 
 ENABLE_MEM_LOG = True
@@ -49,32 +50,79 @@ except Exception:
 _MAX_RSS_MB: float = 0.0
 
 
-def get_memory() -> None:
+def get_memory():
     """
-    Log current RSS of the process in MB.
+    Return current RSS of the process in MB if available, otherwise None.
 
-    Works only if:
-      - env var PAINIT_MEM_LOG="1"
-      - psutil is installed and imported successfully
-
-    Prints something like:
-      [mem] [3] after smoothing: rss=410.3 MB (NEW MAX)
+    Caller is responsible for printing/logging the value.
     """
     global _MAX_RSS_MB
 
     if not ENABLE_MEM_LOG or _PROC is None:
-        return
+        return None
 
     try:
         rss_bytes = _PROC.memory_info().rss
     except Exception:
-        return
+        return None
 
     rss_mb = round(rss_bytes / (1024 * 1024))
-
+    if rss_mb > _MAX_RSS_MB:
+        _MAX_RSS_MB = rss_mb
     return rss_mb
-    
 
+    
+_sampler_thread = None
+_sampler_stop_flag = False
+
+
+def start_memory_sampler(log_path: str = "mem_trace.csv", interval: float = 0.1) -> None:
+    """
+    Start a background thread that samples RSS every `interval` seconds.
+    Values are written to a CSV file: timestamp_sec_since_start, rss_mb.
+    """
+
+    global _sampler_thread, _sampler_stop_flag
+    if _PROC is None:
+        print("[mem-sampler] psutil is not available, sampler disabled")
+        return
+
+    if _sampler_thread is not None:
+        print("[mem-sampler] already running")
+        return
+
+    _sampler_stop_flag = False
+    t0 = time.perf_counter()
+
+    def _worker() -> None:
+        with open(log_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["t_sec", "rss_mb"])
+            while not _sampler_stop_flag:
+                rss_mb = get_memory()
+                if rss_mb is not None:
+                    t = time.perf_counter() - t0
+                    writer.writerow([f"{t:.3f}", rss_mb])
+                time.sleep(interval)
+
+    _sampler_thread = threading.Thread(target=_worker, daemon=True)
+    _sampler_thread.start()
+    print(f"[mem-sampler] started, interval={interval}s, log={log_path}")
+
+
+def stop_memory_sampler() -> None:
+    """
+    Stop the background memory sampler if it is running.
+    """
+
+    global _sampler_thread, _sampler_stop_flag
+    if _sampler_thread is None:
+        return
+
+    _sampler_stop_flag = True
+    _sampler_thread.join()
+    _sampler_thread = None
+    print("[mem-sampler] stopped")
 def build_output_paths(input_path: str, output_dir: str = "output") -> dict:
     """
     Generate output paths under output_dir.
@@ -112,16 +160,12 @@ def estimate_font_size_px_for_print(
     The logic mirrors the smoothing / min-region calculations:
     we clamp the effective resolution by max_effective_dpi and derive mm/px.
     """
-    # how many pixels we effectively use for the long side at max_effective_dpi
     max_effective_px = int(print_long_mm / 25.4 * max_effective_dpi)
     effective_long_px = min(image_long_px, max_effective_px)
 
-    # mm per pixel on paper
     mm_per_px = print_long_mm / float(effective_long_px)
 
-    # desired text height in pixels
     font_size = target_text_mm / mm_per_px
-
     font_size_int = int(round(font_size))
     font_size_int = max(min_px, min(max_px, font_size_int))
     return font_size_int
@@ -149,11 +193,9 @@ def resize_for_print(
     orig_w, orig_h = img.size
     long_px = max(orig_w, orig_h)
 
-    # how many pixels we reasonably need on the long side
     max_long_px = int(round(print_long_mm / 25.4 * max_effective_dpi))
 
     if long_px <= max_long_px:
-        # already small enough, no need to resize
         return img, 1.0
 
     scale = max_long_px / float(long_px)
@@ -168,81 +210,66 @@ def resize_for_print(
     return resized, scale
 
 
-def main(
+def load_and_resize_for_print(
     input_path: str,
-    paper_size: str = "A3",
-    num_colors: int = DEFAULT_NUM_COLORS,
-    min_feature_mm: float = DEFAULT_MIN_FEATURE_MM,
-    area_factor: float = DEFAULT_AREA_FACTOR,
-    random_seed: int = DEFAULT_RANDOM_SEED,
-) -> None:
-
+    print_long_mm: float,
+) -> tuple[np.ndarray, int]:
     """
-    End-to-end pipeline for building a paint-by-numbers booklet:
-
-      1. Load image.
-      2. KMeans quantization in Lab.
-      3. Smooth cluster map.
-      4. Connected components segmentation.
-      5. Merge small regions into neighbouring big ones.
-      6. Optional final clean-up segmentation.
-      7. Order palette and assign paint indices.
-      8. Render outline and reference colored image.
-      9. Save palette CSV and PNG.
-      10. Build 2-page PDF booklet.
+    Load source image, apply EXIF orientation, downscale for print
+    and return a NumPy array plus the effective long side in pixels.
     """
-    np.random.seed(random_seed)
-    t0 = time.perf_counter()
-    input_path = os.path.expanduser(input_path)
-    input_path = str(Path(input_path).resolve())
-    paths = build_output_paths(input_path)
-
-    # 0. Target paper size
-    print_long_mm = get_paper_long_side_mm(paper_size)
-    print(
-        f"[0] Target paper: {paper_size} (long ≈ {print_long_mm:.0f} mm), "
-        f"num_colors={num_colors}, min_feature≈{min_feature_mm} mm, "
-        f"mem={get_memory()}"
-    )
-
-    # 1. Load and possibly resize image
     orig_img = Image.open(input_path)
     orig_img = ImageOps.exif_transpose(orig_img).convert("RGB")
-    orig_img_resized, scale = resize_for_print(
+
+    # Slightly conservative DPI during the pipeline to save memory.
+    resized_img, _ = resize_for_print(
         orig_img,
         print_long_mm=print_long_mm,
-        max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI/2,
+        max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI / 2,
     )
 
-    orig_arr = np.asarray(orig_img_resized).astype(np.uint8)
+    orig_arr = np.asarray(resized_img).astype(np.uint8)
     H, W, _ = orig_arr.shape
     image_long_px = max(H, W)
-    del orig_img, orig_img_resized
-    print(f"[0] Input (effective): size: {W}x{H}, long={image_long_px}px, "
-          f"mem={get_memory()}")
 
-    min_region_pixels = estimate_min_region_pixels(
-        image_long_px=image_long_px,
-        print_long_mm=print_long_mm,
-        min_feature_mm=min_feature_mm,
-        area_factor=area_factor,
-        max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI,
+    del orig_img, resized_img
+
+    print(
+        f"[0] Input (effective): size: {W}x{H}, long={image_long_px}px, "
+        f"mem={get_memory()}"
     )
+    return orig_arr, image_long_px
 
-    # 2. Quantization
+
+def run_quantization_and_smoothing(
+    orig_arr: np.ndarray,
+    num_colors: int,
+    image_long_px: int,
+    print_long_mm: float,
+    min_feature_mm: float,
+    area_factor: float,
+    quant_output_path: Path,
+):
+    """
+    Perform KMeans quantization in Lab and smoothing of the cluster map.
+
+    Returns
+    -------
+    cluster_id_img : np.ndarray (H, W)
+    palette_final  : list of RGB colors
+    """
     t = time.perf_counter()
     cluster_id_raw, palette_colors, quant_arr = quantize_kmeans_lab(
         orig_arr, num_colors
     )
-    Image.fromarray(quant_arr, mode="RGB").save(paths["quant"])
+    Image.fromarray(quant_arr, mode="RGB").save(quant_output_path)
     print(
-        f"[1] KMeans quantization (Lab) -> {paths['quant']} "
+        f"[1] KMeans quantization (Lab) -> {quant_output_path} "
         f"({time.perf_counter() - t:.2f}s), "
         f"mem={get_memory()}"
     )
     print(f"    Initial clusters: {len(palette_colors)}")
 
-    # 3. Smooth cluster map
     t = time.perf_counter()
     cluster_id_img, palette_final = smooth_cluster_map(
         cluster_id_raw,
@@ -255,10 +282,57 @@ def main(
         orig_arr=orig_arr,
     )
 
-    del cluster_id_raw, palette_colors, orig_arr
-    print(f"[3] Cluster map smoothing ({time.perf_counter() - t:.2f}s), "
-          f"mem={get_memory()}")
+    # Drop heavy intermediates as soon as possible
+    del cluster_id_raw, palette_colors, quant_arr, orig_arr
 
+    print(
+        f"[3] Cluster map smoothing ({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
+    )
+
+    return cluster_id_img, palette_final
+
+
+def classify_difficulty(num_regions: int) -> str:
+    """
+    Map number of regions to a human-readable difficulty level.
+    """
+    if num_regions < 500:
+        return "easy"
+    if num_regions < 1000:
+        return "medium"
+    if num_regions < 2000:
+        return "hard"
+    return "insane"
+
+
+def run_regions_and_render(
+    cluster_id_img,
+    palette_final,
+    print_long_mm: float,
+    min_region_pixels: int,
+    outline_path: Path,
+    colored_path: Path,
+    palette_csv_path: Path,
+):
+    """
+    Full region-processing pipeline plus high-res rendering and palette CSV.
+
+    Steps:
+      1. Initial region segmentation.
+      2. Merge small regions.
+      3. Clean up tiny regions and re-segment for final regions.
+      4. Palette ordering and paint numbering.
+      5. Difficulty classification based on final region count.
+      6. High-res outline + colored render with numbers.
+      7. Save palette CSV.
+
+    Returns
+    -------
+    paint_palette : list of RGB tuples
+    num_regions   : int
+    difficulty    : str
+    """
     # 4. First segmentation
     t = time.perf_counter()
     region_id_img, region_color_id, region_area = segment_regions_scipy(cluster_id_img)
@@ -267,6 +341,9 @@ def main(
         f"({time.perf_counter() - t:.2f}s), "
         f"mem={get_memory()}"
     )
+
+    # cluster_id_img is not needed after the first segmentation
+    del cluster_id_img
 
     # 6. Neighbour graph & merge small regions
     t = time.perf_counter()
@@ -277,8 +354,8 @@ def main(
         palette=palette_final,
         min_region_pixels=min_region_pixels,
         allow_fallback=True,
-    )    
-    del region_id_img, region_color_id, region_area
+    )
+    del region_id_img, region_color_id, region_area, palette_final
     print(
         f"[6] Merge small regions ({time.perf_counter() - t:.2f}s), "
         f"mem={get_memory()}"
@@ -296,7 +373,11 @@ def main(
         f"[7] Second segmentation: ({time.perf_counter() - t:.2f}s), "
         f"mem={get_memory()}"
     )
-    # hard cleanup: no region smaller than min_region_pixels
+
+    # cluster_id_final and palette_merged are not needed after cleanup
+    del cluster_id_final, palette_merged
+
+    # Additional hard cleanup to guarantee a minimum region size
     t = time.perf_counter()
     cluster_id_hard, palette_hard = hard_cleanup_tiny_regions(
         cluster_id_refined,
@@ -304,19 +385,28 @@ def main(
         hard_min_pixels=min_region_pixels,
         max_iters=3,
     )
-    print(f"[7b] hard cleanup: ({time.perf_counter() - t:.2f}s), "
-          f"mem={get_memory()}")
-    
+    print(
+        f"[7b] hard cleanup: ({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
+    )
+
     cluster_id_refined = cluster_id_hard
     palette_refined = palette_hard
+    del cluster_id_hard, palette_hard
 
+    # Final regions for rendering
     t = time.perf_counter()
-    final_regions = segment_final_regions_scipy(cluster_id_refined, connectivity4=CONNECTIVITY4)    
-    del cluster_id_final, palette_merged, cluster_id_hard, palette_hard
+    final_regions = segment_final_regions_scipy(
+        cluster_id_refined,
+        connectivity4=CONNECTIVITY4,
+    )
+    num_regions = len(final_regions)
+    print(
+        f"[7c] Final regions for rendering: {num_regions} "
+        f"({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
+    )
 
-    print(f"[7c] Final regions for rendering: {len(final_regions)} ({time.perf_counter() - t:.2f}s), "
-          f"mem={get_memory()}")
-    
     # 8. Palette ordering & numbering (based on final palette)
     t = time.perf_counter()
     color_id_to_paint_index, paint_palette = build_ordered_palette(palette_refined)
@@ -326,22 +416,39 @@ def main(
         f"mem={get_memory()}"
     )
 
+    difficulty = classify_difficulty(num_regions)
+    print(
+        f"[8b] Complexity: regions={num_regions}, difficulty={difficulty}, "
+        f"mem={get_memory()}"
+    )
+
+    # 9. High-res rendering
+    t = time.perf_counter()
     DPI = 300
     target_long_px = int(round(DPI * (print_long_mm / 25.4)))
-    
-    outline_img, colored_img, labels_big, scale_render = render_outline_and_colored_highres(
-        cluster_id_refined, 
-        palette_refined,
-        color_id_to_paint_index,
-        target_long_px=target_long_px,
+
+    outline_img, colored_img, labels_big, scale_render = (
+        render_outline_and_colored_highres(
+            cluster_id_refined,
+            palette_refined,
+            color_id_to_paint_index,
+            target_long_px=target_long_px,
+        )
     )
-    
-    # font size so that height on paper ~ TARGET_NUMBER_HEIGHT_MM
+    colored_img.save(colored_path, dpi=(DPI, DPI))
+    del colored_img
+
+    print(
+        f"[9] Rendering ({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
+    )
+
+    t = time.perf_counter()
     font_size_px_hi = estimate_font_size_px_for_print(
         image_long_px=target_long_px,
         print_long_mm=print_long_mm,
     )
-    
+
     draw_numbers_on_outline_highres(
         outline_img,
         final_regions,
@@ -350,39 +457,122 @@ def main(
         font_size=font_size_px_hi,
         scale=scale_render,
     )
-    
-    outline_img.save(paths["outline"], dpi=(DPI, DPI))
-    colored_img.save(paths["colored"], dpi=(DPI, DPI))
-    
+
+    outline_img.save(outline_path, dpi=(DPI, DPI))
+
+    # Drop heavy rendering data as soon as files are written
     del (
-        cluster_id_img,
         cluster_id_refined,
-        labels_big,
+        palette_refined,
         final_regions,
-        colored_img,
+        labels_big,
         outline_img,
     )
-    import gc
-    gc.collect()
-    print(f"[9] Rendering ({time.perf_counter() - t:.2f}s), "
-          f"mem={get_memory()}")
 
-    save_palette_csv(paths["palette_csv"], paint_palette)
-    t = time.perf_counter()
+    print(
+        f"[9b] draw_numbers_on_outline_highres ({time.perf_counter() - t:.2f}s), "
+        f"mem={get_memory()}"
+    )
 
-    # 11. PDF booklet
+    # Palette CSV is tiny; saving here does not affect memory much
+    save_palette_csv(palette_csv_path, paint_palette)
+
+    return paint_palette, num_regions, difficulty
+
+
+def main(
+    input_path: str,
+    paper_size: str = "A3",
+    num_colors: int = DEFAULT_NUM_COLORS,
+    min_feature_mm: float = DEFAULT_MIN_FEATURE_MM,
+    area_factor: float = DEFAULT_AREA_FACTOR,
+    random_seed: int = DEFAULT_RANDOM_SEED,
+) -> None:
+    """
+    End-to-end pipeline for building a paint-by-numbers booklet:
+
+      1. Load and resize image for the chosen paper size.
+      2. KMeans quantization in Lab and smoothing.
+      3. Region segmentation, merging, cleanup, and numbering.
+      4. High-res outline and reference colored render.
+      5. Save palette CSV.
+      6. Build 2-page PDF booklet.
+    """
+    #start_memory_sampler("mem_trace.csv", interval=0.05)
+    np.random.seed(random_seed)
+    t0 = time.perf_counter()
+
+    input_path = os.path.expanduser(input_path)
+    input_path = str(Path(input_path).resolve())
+    paths = build_output_paths(input_path)
+
+    # Target paper
+    print_long_mm = get_paper_long_side_mm(paper_size)
+    print(
+        f"[0] Target paper: {paper_size} (long ≈ {print_long_mm:.0f} mm), "
+        f"num_colors={num_colors}, min_feature≈{min_feature_mm} mm, "
+        f"mem={get_memory()}"
+    )
+
+    # 1. Load + resize
+    orig_arr, image_long_px = load_and_resize_for_print(
+        input_path,
+        print_long_mm=print_long_mm,
+    )
+
+    min_region_pixels = estimate_min_region_pixels(
+        image_long_px=image_long_px,
+        print_long_mm=print_long_mm,
+        min_feature_mm=min_feature_mm,
+        area_factor=area_factor,
+        max_effective_dpi=DEFAULT_MAX_EFFECTIVE_DPI,
+    )
+
+    # 2–3. Quantization + smoothing
+    cluster_id_img, palette_final = run_quantization_and_smoothing(
+        orig_arr=orig_arr,
+        num_colors=num_colors,
+        image_long_px=image_long_px,
+        print_long_mm=print_long_mm,
+        min_feature_mm=min_feature_mm,
+        area_factor=area_factor,
+        quant_output_path=paths["quant"],
+    )
+
+    # 4–9. Regions, palette ordering, rendering, and palette CSV
+    paint_palette, num_regions, difficulty = run_regions_and_render(
+        cluster_id_img=cluster_id_img,
+        palette_final=palette_final,
+        print_long_mm=print_long_mm,
+        min_region_pixels=min_region_pixels,
+        outline_path=paths["outline"],
+        colored_path=paths["colored"],
+        palette_csv_path=paths["palette_csv"],
+    )
+
+    # These are no longer needed after palette CSV and renders are written
+    del cluster_id_img, palette_final, paint_palette
+    
+    # 10–11. PDF booklet
     t_pdf = time.perf_counter()
     root, _ = os.path.splitext(input_path)
     build_pbn_pdf_booklet(
         root=root,
         original_path=input_path,
-        outline_path=paths["outline"],
-        palette_csv_path=paths["palette_csv"],
-        pdf_name=paths['pdf'],
+        outline_path=str(paths["outline"]),
+        palette_csv_path=str(paths["palette_csv"]),
+        pdf_name=paths["pdf"],
         paper_size=paper_size,
+        num_regions=num_regions,
+        difficulty=difficulty,
     )
-    print(f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s), "
-          f"mem={get_memory()}")
+    print(
+        f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s), "
+        f"mem={get_memory()}"
+    )
 
-    print(f"[done] Total time: {time.perf_counter() - t0:.2f}s, "
-          f"mem={get_memory()}")
+    print(
+        f"[done] Total time: {time.perf_counter() - t0:.2f}s, "
+        f"mem={get_memory()}"
+    )
+    #stop_memory_sampler()

@@ -7,6 +7,32 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from config import LINE_THICKNESS_MM
 
+def get_border(H2, W2, labels_big):
+    # 4) Contours from label differences (vectorized 4-neighborhood)
+    border = np.zeros((H2, W2), dtype=bool)
+
+    # horizontal differences
+    diff_h = labels_big[:, 1:] != labels_big[:, :-1]
+    border[:, 1:] |= diff_h
+    border[:, :-1] |= diff_h
+
+    # vertical differences
+    diff_v = labels_big[1:, :] != labels_big[:-1, :]
+    border[1:, :] |= diff_v
+    border[:-1, :] |= diff_v
+
+    # thickness (you keep your formula)
+    DPI = 300
+    thickness_hi = max(1, int(round(DPI * (LINE_THICKNESS_MM / 25.4))))
+
+    # fast dilation on C
+    if thickness_hi > 1:
+        structure = ndi.generate_binary_structure(2, 1)  # 4-connected
+        structure_big = ndi.iterate_structure(structure, thickness_hi)
+        border_thick = ndi.binary_dilation(border, structure=structure_big, iterations=1)
+    else:
+        border_thick = border
+    return border_thick
 
 def render_outline_and_colored_highres(
     cluster_id_img: np.ndarray,  # (H, W) int color_id per pixel
@@ -34,45 +60,27 @@ def render_outline_and_colored_highres(
     # 1) Upscale labels as uint8 (0..255). Your ids are 0..K-1, so this is safe.
     labels_pil = Image.fromarray(cluster_id_img.astype(np.uint8), mode="L")
     labels_big_pil = labels_pil.resize((W2, H2), resample=Image.NEAREST)
+    del labels_pil
     labels_big = np.asarray(labels_big_pil, dtype=np.uint8)
+    del labels_big_pil
 
+    border_thick = get_border(H2, W2, labels_big)
+
+    outline_arr = np.full((H2, W2, 3), 255, dtype=np.uint8)
+    outline_arr[border_thick] = (0, 0, 0)
+
+    outline_img = Image.fromarray(outline_arr, mode="RGB")
+    del outline_arr
+    
     # 2) Colored fill via palette lookup
     pal = np.asarray(palette_final, dtype=np.uint8)
     labels_safe = np.minimum(labels_big, len(pal) - 1)  # faster than clip for uint
     colored_arr = pal[labels_safe]
-
-    outline_arr = np.full((H2, W2, 3), 255, dtype=np.uint8)
-
-    # 4) Contours from label differences (vectorized 4-neighborhood)
-    border = np.zeros((H2, W2), dtype=bool)
-
-    # horizontal differences
-    diff_h = labels_big[:, 1:] != labels_big[:, :-1]
-    border[:, 1:] |= diff_h
-    border[:, :-1] |= diff_h
-
-    # vertical differences
-    diff_v = labels_big[1:, :] != labels_big[:-1, :]
-    border[1:, :] |= diff_v
-    border[:-1, :] |= diff_v
-
-    # thickness (you keep your formula)
-    DPI = 300
-    thickness_hi = max(1, int(round(DPI * (LINE_THICKNESS_MM / 25.4))))
-
-    # fast dilation on C
-    if thickness_hi > 1:
-        structure = ndi.generate_binary_structure(2, 1)  # 4-connected
-        structure_big = ndi.iterate_structure(structure, thickness_hi)
-        border_thick = ndi.binary_dilation(border, structure=structure_big, iterations=1)
-    else:
-        border_thick = border
-
-    outline_arr[border_thick] = (0, 0, 0)
+    del pal, labels_safe
     colored_arr[border_thick] = (0, 0, 0)
-
-    outline_img = Image.fromarray(outline_arr, mode="RGB")
+    del border_thick
     colored_img = Image.fromarray(colored_arr, mode="RGB")
+    
     return outline_img, colored_img, labels_big, scale
 
 
@@ -393,9 +401,36 @@ def draw_numbers_on_outline_highres(
 
         inner_margin = max(1, font_size // 6)
 
-        # ----- EDT (fast path): downsample x2 for large bboxes -----
-        # Threshold tuned to be conservative: only if bbox is fairly large.
-        # (You can adjust later; it is safe quality-wise because final fit check is hi-res.)
+        # ---------- fast path for simple regions (no EDT) ----------
+        # If region needs only one label, first try to place it near the
+        # geometric centroid of the region. This avoids computing EDT for
+        # "easy" blobs. If it does not fit, we fall back to full logic.
+        if target == 1:
+            # region centroid in low-res coordinates (from final_regions)
+            cx_lr = float(reg["cx"])
+            cy_lr = float(reg["cy"])
+
+            # map to hi-res local coordinates
+            cx_loc = int(round(cx_lr * scale)) - min_x2
+            cy_loc = int(round(cy_lr * scale)) - min_y2
+
+            if 0 <= cx_loc < W_loc and 0 <= cy_loc < H_loc:
+                if _draw_text_at_center(
+                    local_mask=local_mask,
+                    min_x2=min_x2,
+                    min_y2=min_y2,
+                    cx=cx_loc,
+                    cy=cy_loc,
+                    text=text,
+                    tw=tw,
+                    th=th,
+                    inner_margin=inner_margin,
+                ):
+                    # successfully placed label, skip heavy EDT logic
+                    continue
+        # ---------- end of fast path ----------
+
+        # ----- EDT (fast path): downsample x2/x4 for large bboxes -----
         area_bbox = int(H_loc * W_loc)
         if area_bbox >= 2_000_000:
             ds = 4
@@ -431,13 +466,10 @@ def draw_numbers_on_outline_highres(
                 tw=tw,
                 th=th,
                 inner_margin=inner_margin,
-                prefer_center=True,
-                max_tries=10,
+                prefer_center=False,
+                max_tries=6,
                 ds=ds,
             )
-            if ok:
-                continue
-            continue
 
         aspect = float(W_loc) / float(max(1, H_loc))
         elongated = aspect >= 6.0 or (1.0 / aspect) >= 6.0

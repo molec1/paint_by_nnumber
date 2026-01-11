@@ -68,24 +68,45 @@ def smooth_labels_radius_scipy(
 ) -> np.ndarray:
     """
     Fast majority vote smoothing in a (2*radius+1)x(2*radius+1) box window.
+
+    Memory-optimized version:
+      - no (num_labels, H, W) "votes" tensor
+      - keep only best_score (H, W) and best_label (H, W)
     """
-    if radius <= 0 or iterations <= 0:
+    if radius <= 0 or iterations <= 0 or num_labels <= 1:
         return labels
 
     labels = labels.astype(np.int32, copy=False)
     win = 2 * int(radius) + 1
+    H, W = labels.shape
 
     out = labels
     for _ in range(int(iterations)):
-        # votes[k] = local count of label k in the window
-        votes = np.empty((num_labels, out.shape[0], out.shape[1]), dtype=np.float32)
+        # Initialize with current labels so every pixel always has a label
+        best_score = np.zeros((H, W), dtype=np.float32)
+        best_label = out.copy()
 
+        # For each label, compute local frequency and update argmax
         for k in range(num_labels):
-            mask = (out == k).astype(np.float32, copy=False)
-            # uniform_filter gives mean; multiply by window area for counts (or keep mean, argmax is same)
-            votes[k] = ndi.uniform_filter(mask, size=win, mode="nearest")
+            mask = (out == k)
+            if not mask.any():
+                continue
 
-        out = np.argmax(votes, axis=0).astype(np.int32)
+            # local "score" = mean of mask in window (0..1)
+            score = ndi.uniform_filter(
+                mask.astype(np.float32),
+                size=win,
+                mode="nearest",
+            )
+
+            better = score > best_score
+            if not better.any():
+                continue
+
+            best_score[better] = score[better]
+            best_label[better] = k
+
+        out = best_label.astype(np.int32, copy=False)
 
     return out
 

@@ -186,6 +186,19 @@
 
     const portraitOptions = [15, 20, 25];
     const landscapeOptions = [14, 21, 28];
+    
+    async function trackEvent(event, payload = {}) {
+      try {
+        await fetch("/api/track_event", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event, ...payload }),
+          keepalive: true,
+        });
+      } catch (e) {
+        console.warn("Analytics failed", e);
+      }
+    }
 
     function setStatus(s) {
       statusEl.textContent = s || "";
@@ -389,6 +402,10 @@
 
     generateA3Btn.addEventListener("click", async (e) => {
       e.preventDefault();
+      await trackEvent("paid_generate_click", {
+        paper: "A3",
+        from_detail: detail,
+      });
       setStatus("Good news: during beta you do not need to pay. Generating A3 poster now...");
       paper = "A3";
       detail = "medium";
@@ -398,6 +415,10 @@
 
     generateA2Btn.addEventListener("click", async (e) => {
       e.preventDefault();
+      await trackEvent("paid_generate_click", {
+        paper: "A2",
+        from_detail: detail,
+      });
       setStatus("Good news: during beta you do not need to pay. Generating A2 poster now...");
       paper = "A2";
       detail = "medium";

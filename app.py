@@ -9,11 +9,13 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response, Request
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageEnhance, ImageOps
 import subprocess
+import shutil
+
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -36,6 +38,38 @@ PORTRAIT_COLORS = {15, 20, 25}
 LANDSCAPE_COLORS = {14, 21, 28}
 
 A4_RATIO = 1 / (2 ** 0.5)  # width/height for portrait A-series
+APP_DIR = Path(__file__).resolve().parent
+WORK_DIR = APP_DIR / "work"
+WORK_DIR.mkdir(exist_ok=True)
+
+JOB_DIR_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+
+def cleanup_old_workdirs(base: Path, max_age_hours: int = 24) -> None:
+    now = time.time()
+    cutoff = now - max_age_hours * 3600
+
+    for entry in base.iterdir():
+        try:
+            st = entry.stat()
+        except FileNotFoundError:
+            continue
+
+        if not JOB_DIR_PATTERN.match(entry.name):
+            continue
+
+        if st.st_mtime > cutoff:
+            continue
+
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            try:
+                entry.unlink()
+            except FileNotFoundError:
+                pass
+
+cleanup_old_workdirs(WORK_DIR)
 
 
 app = FastAPI(title="Paint-by-Numbers MVP")
@@ -355,6 +389,37 @@ def download_colored(job_id: str) -> FileResponse:
         media_type="image/jpeg",
         filename="colored_preview.jpg",
     )
+
+
+ANALYTICS_LOG = APP_DIR / "analytics.log"
+
+
+@app.post("/api/track_event")
+async def track_event(request: Request) -> JSONResponse:
+    """
+    2026-01-10 20:15:23 paid_generate_click {'paper': 'A3', 'from_detail': 'demo_a3'}
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    event_type = str(payload.get("event") or "unknown").strip()
+    if not event_type:
+        event_type = "unknown"
+
+    event_data = {k: v for k, v in payload.items() if k != "event"}
+
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {event_type} {event_data}\n"
+
+    try:
+        with ANALYTICS_LOG.open("a", encoding="utf-8") as f:
+            f.write(line)
+        stored = True
+    except Exception:
+        stored = False
+
+    return JSONResponse({"ok": True, "stored": stored})
 
 
 @app.exception_handler(Exception)

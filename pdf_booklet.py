@@ -243,6 +243,8 @@ def build_pbn_pdf_booklet(
     palette_csv_path: str,
     pdf_name: str | None = None,
     paper_size: str = "A3",
+    num_regions: int | None = None,
+    difficulty: str | None = None,
 ) -> None:
     """
     Build a 2-page PDF booklet:
@@ -253,6 +255,9 @@ def build_pbn_pdf_booklet(
         Page 2 (A4):
             - top: downscaled original + downscaled outline side by side
             - bottom: palette with color tiles and names
+
+    If num_regions and difficulty are provided, a short complexity summary
+    is displayed between the preview images and the palette.
     """
     if pdf_name is None:
         pdf_name = f"output/{root}_booklet.pdf"
@@ -269,7 +274,8 @@ def build_pbn_pdf_booklet(
     }
 
     ow_full, oh_full = outline_img_full.getSize()
-    if ow_full >= oh_full:
+    is_landscape = ow_full >= oh_full
+    if is_landscape:
         page1_size = landscape(size_dict[paper_size])
     else:
         page1_size = portrait(size_dict[paper_size])
@@ -297,8 +303,7 @@ def build_pbn_pdf_booklet(
     orig_img_small = load_image_reader_scaled(original_path, max_long_px=1800)
     outline_img_small = load_image_reader_scaled(outline_path, max_long_px=1800)
 
-    ow0, oh0 = orig_img_small.getSize()
-    if ow0 >= oh0:
+    if is_landscape:
         page2_size = landscape(A4)
     else:
         page2_size = portrait(A4)
@@ -353,6 +358,16 @@ def build_pbn_pdf_booklet(
         pal_box_w,
         pal_box_h,
     )
+
+    # Optional complexity summary in the middle gap between preview and palette
+    if num_regions is not None and difficulty is not None:
+        c.setFont("Helvetica", 9)
+        footer_text = f"Regions: {num_regions}  •  Difficulty: {difficulty}"
+        gap_center_y = pal_box_y + pal_box_h + (mid_gap - 3 * mm) * 0.5
+        c.drawCentredString(W2 / 2.0, gap_center_y, footer_text)
+
+    # Drop small-page images and palette data before finalizing the canvas
+    del colors, orig_img_small, outline_img_small
 
     c.showPage()
     c.save()
