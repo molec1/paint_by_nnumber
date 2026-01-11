@@ -526,7 +526,7 @@ def main(
     print(
         f"[0] Target paper: {paper_size} (long ≈ {print_long_mm:.0f} mm), "
         f"num_colors={num_colors}, min_feature≈{min_feature_mm} mm, "
-        f"mem={get_memory()}"
+        f"mem={get_memory()} ({time.perf_counter() - t0:.2f}s), "
     )
 
     # 1. Load + resize
@@ -575,7 +575,6 @@ def main(
     root, _ = os.path.splitext(input_path)
     build_pbn_pdf_booklet(
         root=str(root),
-        original_path=input_path,
         outline_path=str(paths["outline"]),
         palette_csv_path=str(paths["palette_csv"]),
         pdf_name=paths["pdf"],

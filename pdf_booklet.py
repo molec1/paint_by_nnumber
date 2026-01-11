@@ -148,6 +148,7 @@ def draw_centered_image(
 
     px = x + (box_w - sw) / 2
     py = y + (box_h - sh) / 2
+    #print(scale,box_w ,iw, box_h, ih)
 
     c.drawImage(img, px, py, sw, sh)
 
@@ -238,7 +239,6 @@ def draw_big_palette(
 
 def build_pbn_pdf_booklet(
     root: str,
-    original_path: str,
     outline_path: str,
     palette_csv_path: str,
     pdf_name: str | None = None,
@@ -303,19 +303,8 @@ def build_pbn_pdf_booklet(
         # ---------- Page 2: A4, downscaled images ----------
     # Prefer small JPEG previews if they exist, otherwise fall back
     # to the original high-resolution files.
-    root_path = Path(root)
-
-    orig_source = root_path.with_name(root_path.name + "_preview_original.jpg")
-    outline_source = root_path.with_name(root_path.name + "_preview_outline.jpg")
-
-    if not orig_source.is_file():
-        orig_source = Path(original_path)
-
-    if not outline_source.is_file():
-        outline_source = Path(outline_path)
-
-    orig_img_small = load_image_reader_scaled(str(orig_source), max_long_px=1800)
-    outline_img_small = load_image_reader_scaled(str(outline_source), max_long_px=1800)
+    orig_img_small = load_image_reader(original_preview_path)
+    outline_img_small = load_image_reader(outline_preview_path)
 
 
 
