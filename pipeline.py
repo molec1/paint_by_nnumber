@@ -25,8 +25,7 @@ from segmentation import (
     segment_regions_scipy,
     merge_small_regions_scipy,
     clean_small_final_regions,
-    hard_cleanup_tiny_regions,
-    segment_final_regions_scipy,
+    iterative_final_cleanup,
 )
 from palette_utils import (
     build_ordered_palette,
@@ -142,6 +141,8 @@ def build_output_paths(input_path: str, output_dir: str = "output") -> dict:
         "palette_csv": out / f"{base}_palette.csv",
         "palette_img": out / f"{base}_palette.png",
         "pdf": str(out / f"{base}_booklet.pdf"),
+        "original_preview": out / f"{base}_preview_original.jpg",
+        "outline_preview": out / f"{base}_preview_outline.jpg",
     }
 
 
@@ -213,6 +214,7 @@ def resize_for_print(
 def load_and_resize_for_print(
     input_path: str,
     print_long_mm: float,
+    paths,
 ) -> tuple[np.ndarray, int]:
     """
     Load source image, apply EXIF orientation, downscale for print
@@ -232,6 +234,27 @@ def load_and_resize_for_print(
     H, W, _ = orig_arr.shape
     image_long_px = max(H, W)
 
+
+    # Save small preview for PDF page 2 while original is still in memory
+    try:
+        preview_path = paths.get("original_preview")
+        if preview_path is not None:
+            max_long_px_preview = 1800  # fits quarter of A4 at 300 DPI
+            preview_img = orig_img.copy()
+            ow, oh = preview_img.size
+            long_side = max(ow, oh)
+            if long_side > max_long_px_preview:
+                scale = max_long_px_preview / float(long_side)
+                new_size = (
+                    int(round(ow * scale)),
+                    int(round(oh * scale)),
+                )
+                preview_img = preview_img.resize(new_size, Image.LANCZOS)
+            preview_img.save(preview_path, format="JPEG", quality=88, optimize=True)
+            del preview_img
+    except Exception as e:
+        print(f"[warn] failed to save original preview: {e}")
+        
     del orig_img, resized_img
 
     print(
@@ -314,6 +337,7 @@ def run_regions_and_render(
     outline_path: Path,
     colored_path: Path,
     palette_csv_path: Path,
+    outline_preview_path: Path | None = None,
 ):
     """
     Full region-processing pipeline plus high-res rendering and palette CSV.
@@ -361,51 +385,23 @@ def run_regions_and_render(
         f"mem={get_memory()}"
     )
 
-    # 7. Final clean-up segmentation
+        # 7. Final clean-up: small regions + tiny slivers in one pass
     t = time.perf_counter()
-    cluster_id_refined, palette_refined = clean_small_final_regions(
+    cluster_id_refined, palette_refined, final_regions = iterative_final_cleanup(
         cluster_id_final,
         palette_merged,
-        min_final_region_pixels=min_region_pixels,
-        return_regions=False,
-    )
-    print(
-        f"[7] Second segmentation: ({time.perf_counter() - t:.2f}s), "
-        f"mem={get_memory()}"
-    )
-
-    # cluster_id_final and palette_merged are not needed after cleanup
-    del cluster_id_final, palette_merged
-
-    # Additional hard cleanup to guarantee a minimum region size
-    t = time.perf_counter()
-    cluster_id_hard, palette_hard = hard_cleanup_tiny_regions(
-        cluster_id_refined,
-        palette_refined,
-        hard_min_pixels=min_region_pixels,
+        min_region_pixels=min_region_pixels,
+        max_tiny_regions=10,
         max_iters=3,
-    )
-    print(
-        f"[7b] hard cleanup: ({time.perf_counter() - t:.2f}s), "
-        f"mem={get_memory()}"
-    )
-
-    cluster_id_refined = cluster_id_hard
-    palette_refined = palette_hard
-    del cluster_id_hard, palette_hard
-
-    # Final regions for rendering
-    t = time.perf_counter()
-    final_regions = segment_final_regions_scipy(
-        cluster_id_refined,
         connectivity4=CONNECTIVITY4,
     )
     num_regions = len(final_regions)
     print(
-        f"[7c] Final regions for rendering: {num_regions} "
+        f"[7] Final cleanup: regions={num_regions} "
         f"({time.perf_counter() - t:.2f}s), "
         f"mem={get_memory()}"
     )
+
 
     # 8. Palette ordering & numbering (based on final palette)
     t = time.perf_counter()
@@ -459,6 +455,25 @@ def run_regions_and_render(
     )
 
     outline_img.save(outline_path, dpi=(DPI, DPI))
+    
+    # Save small outline preview for PDF page 2
+    try:
+        if outline_preview_path is not None:
+            max_long_px_preview = 1800
+            outline_preview = outline_img.copy()
+            ow, oh = outline_preview.size
+            long_side = max(ow, oh)
+            if long_side > max_long_px_preview:
+                scale = max_long_px_preview / float(long_side)
+                new_size = (
+                    int(round(ow * scale)),
+                    int(round(oh * scale)),
+                )
+                outline_preview = outline_preview.resize(new_size, Image.LANCZOS)
+            outline_preview.save(outline_preview_path, format="JPEG", quality=88, optimize=True)
+            del outline_preview
+    except Exception as e:
+        print(f"[warn] failed to save outline preview: {e}")
 
     # Drop heavy rendering data as soon as files are written
     del (
@@ -518,6 +533,7 @@ def main(
     orig_arr, image_long_px = load_and_resize_for_print(
         input_path,
         print_long_mm=print_long_mm,
+        paths=paths,
     )
 
     min_region_pixels = estimate_min_region_pixels(
@@ -548,6 +564,7 @@ def main(
         outline_path=paths["outline"],
         colored_path=paths["colored"],
         palette_csv_path=paths["palette_csv"],
+        outline_preview_path=paths["outline_preview"], 
     )
 
     # These are no longer needed after palette CSV and renders are written
@@ -557,7 +574,7 @@ def main(
     t_pdf = time.perf_counter()
     root, _ = os.path.splitext(input_path)
     build_pbn_pdf_booklet(
-        root=root,
+        root=str(root),
         original_path=input_path,
         outline_path=str(paths["outline"]),
         palette_csv_path=str(paths["palette_csv"]),
@@ -565,7 +582,10 @@ def main(
         paper_size=paper_size,
         num_regions=num_regions,
         difficulty=difficulty,
+        original_preview_path=str(paths["original_preview"]),
+        outline_preview_path=str(paths["outline_preview"]),
     )
+
     print(
         f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s), "
         f"mem={get_memory()}"

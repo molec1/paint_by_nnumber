@@ -245,6 +245,8 @@ def build_pbn_pdf_booklet(
     paper_size: str = "A3",
     num_regions: int | None = None,
     difficulty: str | None = None,
+    original_preview_path: str | None = None,
+    outline_preview_path: str | None = None,
 ) -> None:
     """
     Build a 2-page PDF booklet:
@@ -298,10 +300,24 @@ def build_pbn_pdf_booklet(
     # Release reference to high-res outline before building the second page
     del outline_img_full
 
-    # ---------- Page 2: A4, downscaled images ----------
-    # Use downscaled images for preview to reduce memory footprint.
-    orig_img_small = load_image_reader_scaled(original_path, max_long_px=1800)
-    outline_img_small = load_image_reader_scaled(outline_path, max_long_px=1800)
+        # ---------- Page 2: A4, downscaled images ----------
+    # Prefer small JPEG previews if they exist, otherwise fall back
+    # to the original high-resolution files.
+    root_path = Path(root)
+
+    orig_source = root_path.with_name(root_path.name + "_preview_original.jpg")
+    outline_source = root_path.with_name(root_path.name + "_preview_outline.jpg")
+
+    if not orig_source.is_file():
+        orig_source = Path(original_path)
+
+    if not outline_source.is_file():
+        outline_source = Path(outline_path)
+
+    orig_img_small = load_image_reader_scaled(str(orig_source), max_long_px=1800)
+    outline_img_small = load_image_reader_scaled(str(outline_source), max_long_px=1800)
+
+
 
     if is_landscape:
         page2_size = landscape(A4)

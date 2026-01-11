@@ -344,3 +344,59 @@ def hard_cleanup_tiny_regions(
         )
 
     return current_map, current_palette
+
+
+def iterative_final_cleanup(
+    cluster_id: np.ndarray,
+    palette: list[tuple[int, int, int]],
+    min_region_pixels: int,
+    max_tiny_regions: int = 10,
+    max_iters: int = 3,
+    connectivity4: bool = True,
+) -> tuple[np.ndarray, list[tuple[int, int, int]], list[dict]]:
+    """
+    Combined final clean-up:
+
+      * repeatedly merges all regions smaller than `min_region_pixels`
+      * stops when number of remaining small regions is <= `max_tiny_regions`
+        or when `max_iters` is reached
+      * returns final connected regions ready for rendering
+
+    This replaces the separate clean_small_final_regions + hard_cleanup_tiny_regions
+    passes and runs segmentation/merging only as many times as actually needed.
+    """
+    current_map = cluster_id
+    current_palette = palette
+
+    for it in range(int(max_iters)):
+        region_id_img, region_color_id, region_area = segment_regions_scipy(current_map)
+
+        small_mask = region_area < int(min_region_pixels)
+        num_regions = int(region_area.size)
+        num_small = int(np.count_nonzero(small_mask))
+        num_big = int(num_regions - num_small)
+
+        print(
+            f"[7/clean {it}] regions={num_regions}, big={num_big}, small={num_small}"
+        )
+
+        # Good enough: allow up to `max_tiny_regions` small pieces to survive
+        if num_small <= int(max_tiny_regions) or num_big == 0:
+            break
+
+        # Merge all small regions into neighbours, palette is compacted inside
+        current_map, current_palette = merge_small_regions_scipy(
+            region_id_img=region_id_img,
+            region_color_id=region_color_id,
+            region_area=region_area,
+            palette=current_palette,
+            min_region_pixels=int(min_region_pixels),
+            allow_fallback=True,
+        )
+
+    # Final regions with bboxes and centroids for number drawing
+    final_regions = segment_final_regions_scipy(
+        current_map,
+        connectivity4=connectivity4,
+    )
+    return current_map, current_palette, final_regions
