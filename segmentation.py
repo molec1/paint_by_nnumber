@@ -195,7 +195,7 @@ def merge_small_regions_scipy(
 
     # compact palette to 0..K'-1
     final_cids, inv = np.unique(cluster_id_mod, return_inverse=True)
-    cluster_id_final = inv.reshape(cluster_id_mod.shape)
+    cluster_id_final = inv.reshape(cluster_id_mod.shape).astype(np.uint8, copy=False)
     palette_final = [palette[int(c)] for c in final_cids]
     return cluster_id_final, palette_final
 

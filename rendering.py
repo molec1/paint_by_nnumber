@@ -34,19 +34,21 @@ def get_border(H2, W2, labels_big):
         border_thick = border
     return border_thick
 
-def render_outline_and_colored_highres(
+
+def render_outline_highres(
     cluster_id_img: np.ndarray,  # (H, W) int color_id per pixel
-    palette_final: List[Tuple[int, int, int]],
-    color_id_to_paint_index: Dict[int, int],
     target_long_px: int,
-) -> Tuple[Image.Image, Image.Image, np.ndarray, float]:
+) -> Tuple[Image.Image, np.ndarray, float]:
     """
-    High-res render:
+    High-res outline render (no colored reference):
+
       - upscales cluster_id_img using NEAREST to match target_long_px (long side)
-      - builds colored image by palette lookup
-      - builds contours by label differences + dilation
+      - builds thick contour by label differences + dilation
+
     Returns:
-      outline_img, colored_img, labels_big, scale
+      outline_img : PIL.Image RGB
+      labels_big  : np.ndarray (H2, W2) uint8
+      scale       : float, upscale factor vs cluster_id_img
     """
     H, W = cluster_id_img.shape
     image_long_px = max(H, W)
@@ -57,31 +59,70 @@ def render_outline_and_colored_highres(
     H2 = int(round(H * scale))
     W2 = int(round(W * scale))
 
-    # 1) Upscale labels as uint8 (0..255). Your ids are 0..K-1, so this is safe.
+    # Upscale labels as uint8 (0..255). Your ids are 0..K-1, so this is safe.
     labels_pil = Image.fromarray(cluster_id_img.astype(np.uint8), mode="L")
     labels_big_pil = labels_pil.resize((W2, H2), resample=Image.NEAREST)
     del labels_pil
     labels_big = np.asarray(labels_big_pil, dtype=np.uint8)
     del labels_big_pil
 
+    # Contours
     border_thick = get_border(H2, W2, labels_big)
 
+    # White background with black outline
     outline_arr = np.full((H2, W2, 3), 255, dtype=np.uint8)
     outline_arr[border_thick] = (0, 0, 0)
+    del border_thick
 
     outline_img = Image.fromarray(outline_arr, mode="RGB")
     del outline_arr
-    
-    # 2) Colored fill via palette lookup
+
+    return outline_img, labels_big, scale
+
+
+def render_colored_preview_from_labels(
+    labels_big: np.ndarray,                  # (H2, W2) uint8
+    palette_final: List[Tuple[int, int, int]],
+    max_long_px: int = 2500,
+) -> Image.Image:
+    """
+    Build a colored reference image from hi-res labels with downscale.
+
+    - Downscales labels_big so that long side <= max_long_px (NEAREST),
+      to keep memory usage low.
+    - Applies palette lookup in RGB.
+
+    Returns:
+      colored_img (PIL.Image RGB) at preview resolution.
+    """
+    H2, W2 = labels_big.shape
+    long_side = max(H2, W2)
+
+    # 1) Downscale labels if needed
+    if long_side > max_long_px:
+        scale = max_long_px / float(long_side)
+        new_size = (
+            int(round(W2 * scale)),
+            int(round(H2 * scale)),
+        )
+        labels_pil = Image.fromarray(labels_big, mode="L")
+        labels_small_pil = labels_pil.resize(new_size, resample=Image.NEAREST)
+        del labels_pil
+        labels_small = np.asarray(labels_small_pil, dtype=np.uint8)
+        del labels_small_pil
+    else:
+        labels_small = labels_big
+
+    # 2) Palette lookup
     pal = np.asarray(palette_final, dtype=np.uint8)
-    labels_safe = np.minimum(labels_big, len(pal) - 1)  # faster than clip for uint
+    labels_safe = np.minimum(labels_small, len(pal) - 1)
     colored_arr = pal[labels_safe]
     del pal, labels_safe
-    colored_arr[border_thick] = (0, 0, 0)
-    del border_thick
+
     colored_img = Image.fromarray(colored_arr, mode="RGB")
-    
-    return outline_img, colored_img, labels_big, scale
+    del colored_arr
+
+    return colored_img
 
 
 def _load_font(font_size: int) -> ImageFont.ImageFont:
@@ -430,6 +471,63 @@ def draw_numbers_on_outline_highres(
                     continue
         # ---------- end of fast path ----------
 
+        # ----- very large bbox: skip EDT, use simple grid-only placement -----
+        area_bbox = int(H_loc * W_loc)
+        VERY_LARGE_BBOX = 3_000_000  # порог можно потом потюнить
+
+        if area_bbox >= VERY_LARGE_BBOX:
+            windows = _split_into_grid_windows(W_loc=W_loc, H_loc=H_loc, target=target)
+            placed = 0
+            for (x0, x1, y0, y1) in windows:
+                if placed >= target:
+                    break
+                # центр окна в локальных координатах
+                cx_loc = (x0 + x1) // 2
+                cy_loc = (y0 + y1) // 2
+
+                if _draw_text_at_center(
+                    local_mask=local_mask,
+                    min_x2=min_x2,
+                    min_y2=min_y2,
+                    cx=cx_loc,
+                    cy=cy_loc,
+                    text=text,
+                    tw=tw,
+                    th=th,
+                    inner_margin=inner_margin,
+                ):
+                    placed += 1
+
+            continue
+        
+        # ----- very large bbox: skip EDT, use simple grid-only placement -----
+        area_bbox = int(H_loc * W_loc)
+        VERY_LARGE_BBOX = 500_000 
+
+        if area_bbox >= VERY_LARGE_BBOX:
+            windows = _split_into_grid_windows(W_loc=W_loc, H_loc=H_loc, target=target)
+            placed = 0
+            for (x0, x1, y0, y1) in windows:
+                if placed >= target:
+                    break
+                cx_loc = (x0 + x1) // 2
+                cy_loc = (y0 + y1) // 2
+
+                if _draw_text_at_center(
+                    local_mask=local_mask,
+                    min_x2=min_x2,
+                    min_y2=min_y2,
+                    cx=cx_loc,
+                    cy=cy_loc,
+                    text=text,
+                    tw=tw,
+                    th=th,
+                    inner_margin=inner_margin,
+                ):
+                    placed += 1
+
+            continue
+
         # ----- EDT (fast path): downsample x2/x4 for large bboxes -----
         area_bbox = int(H_loc * W_loc)
         if area_bbox >= 2_000_000:
@@ -443,10 +541,14 @@ def draw_numbers_on_outline_highres(
         if ds == 1:
             lm = np.pad(local_mask, pad_width=pad, mode="constant", constant_values=False)
             dist = ndi.distance_transform_edt(lm)[pad:-pad, pad:-pad]
+            del lm
         else:
             lm_d = local_mask[::ds, ::ds]
             lm_d = np.pad(lm_d, pad_width=pad, mode="constant", constant_values=False)
             dist = ndi.distance_transform_edt(lm_d)[pad:-pad, pad:-pad]
+            del lm_d
+            
+        dist = dist.astype(np.float32, copy=False)
 
         windows = _split_into_grid_windows(W_loc=W_loc, H_loc=H_loc, target=target)
 

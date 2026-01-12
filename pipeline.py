@@ -24,14 +24,13 @@ from smoothing import estimate_min_region_pixels
 from segmentation import (
     segment_regions_scipy,
     merge_small_regions_scipy,
-    clean_small_final_regions,
     iterative_final_cleanup,
 )
 from palette_utils import (
     build_ordered_palette,
     save_palette_csv,
 )
-from rendering import render_outline_and_colored_highres, draw_numbers_on_outline_highres
+from rendering import render_outline_highres, render_colored_preview_from_labels, draw_numbers_on_outline_highres
 from pdf_booklet import build_pbn_pdf_booklet
 
 # --- Memory logging helper -------------------------------------------------
@@ -215,6 +214,7 @@ def load_and_resize_for_print(
     input_path: str,
     print_long_mm: float,
     paths,
+    t0: time,
 ) -> tuple[np.ndarray, int]:
     """
     Load source image, apply EXIF orientation, downscale for print
@@ -233,6 +233,12 @@ def load_and_resize_for_print(
     orig_arr = np.asarray(resized_img).astype(np.uint8)
     H, W, _ = orig_arr.shape
     image_long_px = max(H, W)
+
+    print(
+        f"[0] Input (effective): size: {W}x{H}, long={image_long_px}px, "
+        f"({time.perf_counter() - t0:.2f}s), "
+        f"mem={get_memory()}"
+    )
 
 
     # Save small preview for PDF page 2 while original is still in memory
@@ -258,7 +264,8 @@ def load_and_resize_for_print(
     del orig_img, resized_img
 
     print(
-        f"[0] Input (effective): size: {W}x{H}, long={image_long_px}px, "
+        f"[0] Previews are ready"
+        f"({time.perf_counter() - t0:.2f}s), "
         f"mem={get_memory()}"
     )
     return orig_arr, image_long_px
@@ -272,6 +279,7 @@ def run_quantization_and_smoothing(
     min_feature_mm: float,
     area_factor: float,
     quant_output_path: Path,
+    t0: time
 ):
     """
     Perform KMeans quantization in Lab and smoothing of the cluster map.
@@ -289,9 +297,9 @@ def run_quantization_and_smoothing(
     print(
         f"[1] KMeans quantization (Lab) -> {quant_output_path} "
         f"({time.perf_counter() - t:.2f}s), "
+        f"time from start ({time.perf_counter() - t0:.2f}s), "
         f"mem={get_memory()}"
     )
-    print(f"    Initial clusters: {len(palette_colors)}")
 
     t = time.perf_counter()
     cluster_id_img, palette_final = smooth_cluster_map(
@@ -337,6 +345,7 @@ def run_regions_and_render(
     outline_path: Path,
     colored_path: Path,
     palette_csv_path: Path,
+    image_long_px: int,
     outline_preview_path: Path | None = None,
 ):
     """
@@ -418,22 +427,25 @@ def run_regions_and_render(
         f"mem={get_memory()}"
     )
 
-    # 9. High-res rendering
+        # 9. High-res rendering
     t = time.perf_counter()
     DPI = 300
     target_long_px = int(round(DPI * (print_long_mm / 25.4)))
 
-    outline_img, colored_img, labels_big, scale_render = (
-        render_outline_and_colored_highres(
-            cluster_id_refined,
-            palette_refined,
-            color_id_to_paint_index,
-            target_long_px=target_long_px,
-        )
+    # 9a. Hi-res outline (for printing / PDF)
+    outline_img, labels_big, scale_render = render_outline_highres(
+        cluster_id_refined,
+        target_long_px=target_long_px,
+    )
+
+    # 9b. Low-res colored reference (screen preview only)
+    colored_img = render_colored_preview_from_labels(
+        labels_big=labels_big,
+        palette_final=palette_refined,
+        max_long_px=image_long_px,
     )
     colored_img.save(colored_path, dpi=(DPI, DPI))
     del colored_img
-
     print(
         f"[9] Rendering ({time.perf_counter() - t:.2f}s), "
         f"mem={get_memory()}"
@@ -513,7 +525,7 @@ def main(
       5. Save palette CSV.
       6. Build 2-page PDF booklet.
     """
-    #start_memory_sampler("mem_trace.csv", interval=0.05)
+    start_memory_sampler("mem_trace.csv", interval=0.05)
     np.random.seed(random_seed)
     t0 = time.perf_counter()
 
@@ -534,6 +546,7 @@ def main(
         input_path,
         print_long_mm=print_long_mm,
         paths=paths,
+        t0=t0,
     )
 
     min_region_pixels = estimate_min_region_pixels(
@@ -553,6 +566,7 @@ def main(
         min_feature_mm=min_feature_mm,
         area_factor=area_factor,
         quant_output_path=paths["quant"],
+        t0=t0,
     )
 
     # 4–9. Regions, palette ordering, rendering, and palette CSV
@@ -565,6 +579,7 @@ def main(
         colored_path=paths["colored"],
         palette_csv_path=paths["palette_csv"],
         outline_preview_path=paths["outline_preview"], 
+        image_long_px=image_long_px,
     )
 
     # These are no longer needed after palette CSV and renders are written
@@ -594,4 +609,4 @@ def main(
         f"[done] Total time: {time.perf_counter() - t0:.2f}s, "
         f"mem={get_memory()}"
     )
-    #stop_memory_sampler()
+    stop_memory_sampler()

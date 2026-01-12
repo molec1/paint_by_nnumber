@@ -6,9 +6,131 @@ import numpy as np
 from sklearn.cluster import KMeans
 from sklearn.tree import DecisionTreeClassifier
 
-from colorspace import rgb_to_lab, lab_to_rgb
+from colorspace import lab_to_rgb
 from smoothing import estimate_smoothing_radius_px, smooth_labels_radius_scipy
 
+
+def rgb_to_lab(
+    rgb: np.ndarray,
+    out_dtype: np.dtype = np.float16,
+    block_rows: int = 256,
+) -> np.ndarray:
+    """
+    Convert an sRGB uint8 image (H, W, 3) to CIE Lab with low peak memory.
+
+    - Processes the image in row blocks to avoid large temporary arrays.
+    - Uses float32 internally for math, then casts to out_dtype at the end.
+
+    Parameters
+    ----------
+    rgb : np.ndarray
+        Input image, shape (H, W, 3), dtype uint8, sRGB color space.
+    out_dtype : np.dtype, optional
+        Output dtype for Lab, e.g. np.float16 or np.float32.
+    block_rows : int, optional
+        Number of rows to process per block.
+
+    Returns
+    -------
+    lab : np.ndarray
+        Lab image, shape (H, W, 3), dtype=out_dtype.
+    """
+    assert rgb.ndim == 3 and rgb.shape[2] == 3, "rgb must be (H, W, 3)"
+    assert rgb.dtype == np.uint8, "rgb must be uint8"
+
+    H, W, _ = rgb.shape
+
+    # Allocate output Lab array once.
+    lab = np.empty((H, W, 3), dtype=out_dtype)
+
+    # Constants for sRGB -> XYZ (D65) and XYZ -> Lab.
+    # sRGB to XYZ matrix (D65)
+    M = np.array(
+        [
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041],
+        ],
+        dtype=np.float32,
+    )
+
+    # Reference white D65 in XYZ (normalized Y=1.0)
+    Xn, Yn, Zn = 0.95047, 1.0, 1.08883
+
+    # Lab constants
+    delta = 6.0 / 29.0
+    delta2 = delta * delta
+    delta3 = delta2 * delta
+
+    def f_func(t: np.ndarray) -> np.ndarray:
+        """
+        Helper for Lab nonlinearity f(t).
+        Works in-place-friendly style: returns new array, but caller can reuse.
+        """
+        # t is float32
+        out = np.empty_like(t, dtype=np.float32)
+        mask = t > delta3
+        # Where t is big enough
+        out[mask] = np.cbrt(t[mask])
+        # Where t is small
+        out[~mask] = t[~mask] * (1.0 / (3.0 * delta2)) + (4.0 / 29.0)
+        return out
+
+    # Process image in row blocks
+    for start in range(0, H, block_rows):
+        end = min(H, start + block_rows)
+
+        # 1) Extract chunk and convert to float32 [0, 1]
+        # rgb_chunk: (R, G, B) in [0, 255], uint8
+        rgb_chunk = rgb[start:end]  # view, uint8
+        # float_chunk: float32 in [0, 1]
+        float_chunk = rgb_chunk.astype(np.float32) * (1.0 / 255.0)
+
+        # 2) sRGB gamma correction (inverse companding) in-place
+        # linearize sRGB
+        # small values: c / 12.92
+        # large values: ((c + 0.055) / 1.055) ** 2.4
+        for ch in range(3):
+            c = float_chunk[..., ch]
+            mask = c > 0.04045
+            # big branch
+            c_big = c[mask]
+            c[mask] = ((c_big + 0.055) / 1.055) ** 2.4
+            # small branch
+            c_small = c[~mask]
+            c[~mask] = c_small / 12.92
+
+        # 3) Convert linear RGB to XYZ
+        R = float_chunk[..., 0]
+        G = float_chunk[..., 1]
+        B = float_chunk[..., 2]
+
+        X = M[0, 0] * R + M[0, 1] * G + M[0, 2] * B
+        Y = M[1, 0] * R + M[1, 1] * G + M[1, 2] * B
+        Z = M[2, 0] * R + M[2, 1] * G + M[2, 2] * B
+
+        # 4) Normalize by reference white
+        X /= Xn
+        Y /= Yn
+        Z /= Zn
+
+        # 5) Apply f(t) for Lab
+        fX = f_func(X)
+        fY = f_func(Y)
+        fZ = f_func(Z)
+
+        # 6) Compute Lab
+        L = 116.0 * fY - 16.0
+        a = 500.0 * (fX - fY)
+        b = 200.0 * (fY - fZ)
+
+        # 7) Store into output (cast to out_dtype)
+        lab_block = lab[start:end]
+        lab_block[..., 0] = L.astype(out_dtype, copy=False)
+        lab_block[..., 1] = a.astype(out_dtype, copy=False)
+        lab_block[..., 2] = b.astype(out_dtype, copy=False)
+
+    return lab
 
 def quantize_kmeans_lab(
     orig_arr: np.ndarray,
@@ -30,7 +152,7 @@ def quantize_kmeans_lab(
     H, W, _ = orig_arr.shape
 
     # 1) RGB -> Lab (float32)
-    lab = rgb_to_lab(orig_arr)          # (H, W, 3) float32
+    lab = rgb_to_lab(orig_arr, out_dtype=np.float16)
     flat_lab = lab.reshape(-1, 3)       # view, (N, 3)
     n_pixels = flat_lab.shape[0]
 
@@ -52,6 +174,8 @@ def quantize_kmeans_lab(
 
     # cluster labels for the subset (training targets for the tree)
     sample_labels = kmeans.labels_.astype(np.int8, copy=False)
+    centers_lab = kmeans.cluster_centers_.astype(np.float32, copy=False)   # (K, 3)
+    del kmeans
 
     # 4) Train decision tree on (Lab -> cluster_id)
     tree = DecisionTreeClassifier(
@@ -60,6 +184,7 @@ def quantize_kmeans_lab(
         random_state=42,
     )
     tree.fit(sample_lab, sample_labels)
+    del sample_lab
 
     # 5) Predict cluster for all pixels using the tree (batched for safety)
     labels_all = np.empty(n_pixels, dtype=np.int8)
@@ -73,7 +198,6 @@ def quantize_kmeans_lab(
     cluster_id_raw = labels_all.reshape(H, W)
 
     # 6) Palette from k-means centers
-    centers_lab = kmeans.cluster_centers_.astype(np.float32, copy=False)   # (K, 3)
     centers_rgb = lab_to_rgb(centers_lab)      # (K, 3) uint8
     palette_colors = [tuple(map(int, c)) for c in centers_rgb]
 
@@ -119,7 +243,7 @@ def smooth_cluster_map(
         cluster_id_smoothed, axis=None, return_inverse=True
     )
     H, W = cluster_id_raw.shape
-    cluster_id_img = inverse2.reshape(H, W)  # 0..K'-1
+    cluster_id_img = inverse2.reshape(H, W) .astype(np.uint8, copy=False) # 0..K'-1
 
     palette_final = [palette_colors[int(c)] for c in final_cids]
     return cluster_id_img, palette_final
