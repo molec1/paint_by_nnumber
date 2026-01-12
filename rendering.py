@@ -90,7 +90,8 @@ def render_colored_preview_from_labels(
 
     - Downscales labels_big so that long side <= max_long_px (NEAREST),
       to keep memory usage low.
-    - Applies palette lookup in RGB.
+    - Applies palette lookup in RGB and draws black contour lines
+      (same logic as for the high-res outline, but at preview resolution).
 
     Returns:
       colored_img (PIL.Image RGB) at preview resolution.
@@ -117,12 +118,19 @@ def render_colored_preview_from_labels(
     pal = np.asarray(palette_final, dtype=np.uint8)
     labels_safe = np.minimum(labels_small, len(pal) - 1)
     colored_arr = pal[labels_safe]
-    del pal, labels_safe
+
+    # 3) Draw contour lines on top (at preview resolution)
+    h_small, w_small = labels_small.shape
+    border_thick = get_border(h_small, w_small, labels_small)
+    colored_arr[border_thick] = (0, 0, 0)
+
+    del pal, labels_safe, border_thick
 
     colored_img = Image.fromarray(colored_arr, mode="RGB")
     del colored_arr
 
     return colored_img
+
 
 
 def _load_font(font_size: int) -> ImageFont.ImageFont:

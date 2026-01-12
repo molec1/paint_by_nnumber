@@ -6,6 +6,7 @@ import re
 import time
 import sys
 import uuid
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,7 @@ from PIL import Image, ImageEnhance, ImageOps
 import subprocess
 import shutil
 
+from pdf_booklet import build_pbn_pdf_booklet
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -38,14 +40,12 @@ PORTRAIT_COLORS = {15, 20, 25}
 LANDSCAPE_COLORS = {14, 21, 28}
 
 A4_RATIO = 1 / (2 ** 0.5)  # width/height for portrait A-series
-APP_DIR = Path(__file__).resolve().parent
-WORK_DIR = APP_DIR / "work"
-WORK_DIR.mkdir(exist_ok=True)
 
 JOB_DIR_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
 def cleanup_old_workdirs(base: Path, max_age_hours: int = 24) -> None:
+    """Delete per-job folders older than max_age_hours."""
     now = time.time()
     cutoff = now - max_age_hours * 3600
 
@@ -69,8 +69,8 @@ def cleanup_old_workdirs(base: Path, max_age_hours: int = 24) -> None:
             except FileNotFoundError:
                 pass
 
-cleanup_old_workdirs(WORK_DIR)
 
+cleanup_old_workdirs(WORK_DIR)
 
 app = FastAPI(title="Paint-by-Numbers MVP")
 
@@ -85,7 +85,7 @@ def _safe_filename(name: str) -> str:
 
 
 def _read_upload_limited(upload: UploadFile, limit_bytes: int) -> bytes:
-    # Read into memory with a hard limit
+    """Read uploaded file into memory with a hard size limit."""
     buf = bytearray()
     chunk_size = 1024 * 1024
     while True:
@@ -106,9 +106,7 @@ def _infer_orientation(img: Image.Image) -> str:
 
 
 def _center_crop_to_ratio(img: Image.Image, target_ratio_w_over_h: float) -> Image.Image:
-    """
-    Center-crop image to target aspect ratio (w/h).
-    """
+    """Center-crop image to target aspect ratio (w/h)."""
     w, h = img.size
     current = w / h
 
@@ -127,10 +125,15 @@ def _center_crop_to_ratio(img: Image.Image, target_ratio_w_over_h: float) -> Ima
         return img.crop((0, y0, w, y0 + new_h))
 
 
-def _contain_on_a4_canvas(img: Image.Image, portrait: bool = True, bg=(255, 255, 255)) -> Image.Image:
+def _contain_on_a4_canvas(
+    img: Image.Image,
+    portrait: bool = True,
+    bg=(255, 255, 255),
+) -> Image.Image:
     """
     Fit image inside A4 ratio without cropping, pad with background.
-    Output keeps original pixel count scale roughly, just pads.
+
+    Output keeps original pixel scale roughly, just adds padding.
     """
     w, h = img.size
     target_ratio = A4_RATIO if portrait else 1 / A4_RATIO  # w/h
@@ -139,7 +142,6 @@ def _contain_on_a4_canvas(img: Image.Image, portrait: bool = True, bg=(255, 255,
     if abs(current - target_ratio) < 1e-6:
         return img
 
-    # Determine new canvas size preserving max dimension
     if current > target_ratio:
         # too wide: canvas must be taller
         new_h = int(round(w / target_ratio))
@@ -157,17 +159,18 @@ def _contain_on_a4_canvas(img: Image.Image, portrait: bool = True, bg=(255, 255,
 
 
 def _auto_saturate(img: Image.Image) -> Image.Image:
-    """
-    Gentle saturation boost. Keep it mild to avoid 'Instagram look'.
-    """
-    # Convert to RGB just in case
+    """Gentle saturation boost to make colors a bit richer."""
     if img.mode != "RGB":
         img = img.convert("RGB")
     enhancer = ImageEnhance.Color(img)
-    return enhancer.enhance(1.10)  # 10% boost
+    return enhancer.enhance(1.10)  # ~10% boost
 
 
-def _downscale_image_long_side_jpeg(img: Image, long_side: int = 2048) -> None:
+def _downscale_image_long_side_jpeg(
+    img: Image.Image,
+    long_side: int = 2048,
+) -> Image.Image:
+    """Downscale image so that its long side is at most long_side pixels."""
     w, h = img.size
     long_now = max(w, h)
 
@@ -196,12 +199,12 @@ def index() -> HTMLResponse:
 @app.post("/api/preview")
 def generate_preview(
     image: UploadFile = File(...),
-    detail: str = Form(...),  # easy/medium/hard
+    detail: str = Form(...),  # easy/medium/hard/demo_a3/demo_a2
     colors: int = Form(...),
     auto_crop: str = Form("false"),
     auto_saturation: str = Form("false"),
     orientation: Optional[str] = Form(None),  # portrait/landscape; optional
-    paper: str = Form("A4"),  # A4 / A3 / A2, default is A4
+    paper: str = Form("A4"),  # A4 / A3 / A2 / A1, default is A4
 ) -> JSONResponse:
     t0 = time.perf_counter()
 
@@ -221,8 +224,7 @@ def generate_preview(
     try:
         img = Image.open(io.BytesIO(raw))
         img = ImageOps.exif_transpose(img)
-        # Only for A4 tests!
-        # TODO: remove this!
+        # Temporary: keep the input at a manageable resolution for the MVP.
         img = _downscale_image_long_side_jpeg(img, 2048)
         img.load()
         del raw
@@ -244,7 +246,7 @@ def generate_preview(
 
     portrait = orientation == "portrait"
 
-    # Pre-processing toggles
+    # Optional pre-processing
     if auto_sat_bool:
         img = _auto_saturate(img)
 
@@ -252,7 +254,7 @@ def generate_preview(
         target_ratio = A4_RATIO if portrait else 1 / A4_RATIO
         img = _center_crop_to_ratio(img, target_ratio)
 
-    # Write a temp input file for the existing pipeline
+    # Per-job folder
     job_id = uuid.uuid4().hex
     job_dir = WORK_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -263,13 +265,12 @@ def generate_preview(
 
     min_feature_mm = DETAIL_TO_MIN_FEATURE_MM[detail]
 
-    # Run existing pipeline synchronously (MVP)
-    # Note: pipeline writes to ./output by default. We want per-job output:
-    # easiest MVP: temporarily chdir into job_dir and set output to "output".
+    # Run pipeline synchronously, but WITHOUT PDF (build_pdf=0)
     old_cwd = os.getcwd()
     try:
         os.chdir(str(job_dir))
-        # pipeline will create ./output
+        out_dir = job_dir / "output"
+
         cmd = [
             sys.executable,
             str(APP_DIR / "main.py"),
@@ -277,15 +278,16 @@ def generate_preview(
             paper,
             str(min_feature_mm),
             str(int(colors)),
+            "0",  # do not build PDF inside the pipeline
         ]
-        
+
         env = os.environ.copy()
         env["OMP_NUM_THREADS"] = "1"
         env["MKL_NUM_THREADS"] = "1"
         env["OPENBLAS_NUM_THREADS"] = "1"
         env["NUMEXPR_NUM_THREADS"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
-        
+
         log_path = job_dir / "pipeline.log"
         with log_path.open("w", encoding="utf-8") as log_f:
             p = subprocess.run(
@@ -296,7 +298,7 @@ def generate_preview(
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-        
+
         if p.returncode != 0:
             tail = ""
             try:
@@ -304,25 +306,15 @@ def generate_preview(
             except Exception:
                 pass
             raise HTTPException(status_code=500, detail=f"Pipeline failed.\n{tail}")
-
-
     finally:
         os.chdir(old_cwd)
 
-        out_dir = job_dir / "output"
-
-    # --- Optional PDF (only for non-demo A4 modes) ---
-    pdf_url = None
+    # PDF URL is just a link; actual PDF will be built lazily on download
+    pdf_url: Optional[str] = None
     if detail in ("easy", "medium", "hard"):
-        pdf_path = out_dir / "input_booklet.pdf"
-        if not pdf_path.exists():
-            pdfs = sorted(out_dir.glob("*_booklet.pdf"))
-            if not pdfs:
-                raise HTTPException(status_code=500, detail="PDF was not generated.")
-            pdf_path = pdfs[0]
         pdf_url = f"/download/{job_id}/pdf"
 
-    # --- build downscaled colored preview (not embedded into PDF) ---
+    # Build downscaled colored preview (separate from PDF)
     colored_candidates = []
     for ext in ("jpg", "jpeg", "JPG", "JPEG"):
         colored_candidates.extend(out_dir.glob(f"*_pbn_colored.{ext}"))
@@ -340,42 +332,99 @@ def generate_preview(
 
     dt = time.perf_counter() - t0
 
+    meta = {
+        "detail": detail,
+        "min_feature_mm": min_feature_mm,
+        "colors": int(colors),
+        "orientation": orientation,
+        "auto_crop": auto_crop_bool,
+        "auto_saturation": auto_sat_bool,
+        "paper": paper,
+        "upload_limit_mb": MAX_UPLOAD_MB,
+    }
+
+    # Persist meta per job for lazy PDF generation
+    try:
+        meta_path = job_dir / "job_meta.json"
+        with meta_path.open("w", encoding="utf-8") as f:
+            json.dump(meta, f)
+    except Exception:
+        pass
+
     return JSONResponse(
         {
             "job_id": job_id,
             "pdf_url": pdf_url,  # None for demo_a3/demo_a2
             "colored_url": colored_url,
             "seconds": round(dt, 2),
-            "meta": {
-                "detail": detail,
-                "min_feature_mm": min_feature_mm,
-                "colors": int(colors),
-                "orientation": orientation,
-                "auto_crop": auto_crop_bool,
-                "auto_saturation": auto_sat_bool,
-                "paper": paper,
-                "upload_limit_mb": MAX_UPLOAD_MB,
-            },
+            "meta": meta,
         }
     )
-
 
 
 @app.get("/download/{job_id}/pdf")
 def download_pdf(job_id: str) -> FileResponse:
     job_dir = WORK_DIR / job_id
     out_dir = job_dir / "output"
+
+    if not out_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    # Main expected path for the booklet PDF
     pdf_path = out_dir / "input_booklet.pdf"
+
+    # If PDF does not exist yet, generate it lazily from existing outputs
     if not pdf_path.exists():
-        pdfs = sorted(out_dir.glob("*_booklet.pdf"))
-        if not pdfs:
-            raise HTTPException(status_code=404, detail="Not found.")
-        pdf_path = pdfs[0]
+        input_path = job_dir / "input.jpg"
+        if not input_path.exists():
+            raise HTTPException(status_code=404, detail="Input not found for this job.")
+
+        base = input_path.stem  # "input"
+        ext = input_path.suffix  # ".jpg"
+
+        outline_path = out_dir / f"{base}_pbn_outline{ext}"
+        palette_csv_path = out_dir / f"{base}_palette.csv"
+        original_preview_path = out_dir / f"{base}_preview_original.jpg"
+        outline_preview_path = out_dir / f"{base}_preview_outline.jpg"
+
+        if not outline_path.exists() or not palette_csv_path.exists():
+            raise HTTPException(status_code=404, detail="Required outputs not found.")
+
+        # Read meta to restore paper size, fallback to A4
+        paper_size = "A4"
+        meta_path = job_dir / "job_meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                paper_size = str(meta.get("paper") or "A4").upper()
+            except Exception:
+                paper_size = "A4"
+
+        try:
+            build_pbn_pdf_booklet(
+                root=str(input_path.with_suffix("")),
+                outline_path=str(outline_path),
+                palette_csv_path=str(palette_csv_path),
+                pdf_name=str(pdf_path),
+                paper_size=paper_size,
+                num_regions=None,
+                difficulty=None,
+                original_preview_path=str(original_preview_path)
+                if original_preview_path.exists()
+                else None,
+                outline_preview_path=str(outline_preview_path)
+                if outline_preview_path.exists()
+                else None,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"PDF generation failed: {e}"
+            )
 
     return FileResponse(
         path=str(pdf_path),
         media_type="application/pdf",
-        filename="paint_by_numbers_A4.pdf",
+        filename="paint_by_numbers.pdf",
     )
 
 
@@ -397,7 +446,9 @@ ANALYTICS_LOG = APP_DIR / "analytics.log"
 @app.post("/api/track_event")
 async def track_event(request: Request) -> JSONResponse:
     """
-    2026-01-10 20:15:23 paid_generate_click {'paper': 'A3', 'from_detail': 'demo_a3'}
+    Simple analytics endpoint.
+    Example log line:
+      2026-01-10 20:15:23 paid_generate_click {'paper': 'A3', 'from_detail': 'demo_a3'}
     """
     try:
         payload = await request.json()

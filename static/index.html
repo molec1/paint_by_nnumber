@@ -210,6 +210,15 @@
         b.classList.toggle("active", b.dataset.value === value);
       });
     }
+    
+    function updateGoLabel() {
+      if (hasRealGeneration) {
+        goEl.textContent = "Generate";
+      } else {
+        goEl.textContent = "Generate preview";
+      }
+    }
+
 
     function resetDemoUi() {
       demoActionsEl.style.display = "none";
@@ -411,6 +420,8 @@
       detail = "medium";
       setActive("detailSeg", detail);
       await runPreview();
+      hasRealGeneration = true;
+      updateGoLabel();
     });
 
     generateA2Btn.addEventListener("click", async (e) => {
@@ -424,6 +435,8 @@
       detail = "medium";
       setActive("detailSeg", detail);
       await runPreview();
+      hasRealGeneration = true;
+      updateGoLabel();
     });
 
     (function setupLightbox() {
@@ -461,6 +474,7 @@
         }
       });
     })();
+    updateGoLabel();
   </script>
 </body>
 </html>

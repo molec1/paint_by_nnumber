@@ -514,6 +514,7 @@ def main(
     min_feature_mm: float = DEFAULT_MIN_FEATURE_MM,
     area_factor: float = DEFAULT_AREA_FACTOR,
     random_seed: int = DEFAULT_RANDOM_SEED,
+    build_pdf: bool = True,
 ) -> None:
     """
     End-to-end pipeline for building a paint-by-numbers booklet:
@@ -585,25 +586,26 @@ def main(
     # These are no longer needed after palette CSV and renders are written
     del cluster_id_img, palette_final, paint_palette
     
-    # 10–11. PDF booklet
-    t_pdf = time.perf_counter()
-    root, _ = os.path.splitext(input_path)
-    build_pbn_pdf_booklet(
-        root=str(root),
-        outline_path=str(paths["outline"]),
-        palette_csv_path=str(paths["palette_csv"]),
-        pdf_name=paths["pdf"],
-        paper_size=paper_size,
-        num_regions=num_regions,
-        difficulty=difficulty,
-        original_preview_path=str(paths["original_preview"]),
-        outline_preview_path=str(paths["outline_preview"]),
-    )
-
-    print(
-        f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s), "
-        f"mem={get_memory()}"
-    )
+    if build_pdf:
+        # 10–11. PDF booklet
+        t_pdf = time.perf_counter()
+        root, _ = os.path.splitext(input_path)
+        build_pbn_pdf_booklet(
+            root=str(root),
+            outline_path=str(paths["outline"]),
+            palette_csv_path=str(paths["palette_csv"]),
+            pdf_name=paths["pdf"],
+            paper_size=paper_size,
+            num_regions=num_regions,
+            difficulty=difficulty,
+            original_preview_path=str(paths["original_preview"]),
+            outline_preview_path=str(paths["outline_preview"]),
+        )
+    
+        print(
+            f"[11] PDF booklet generation ({time.perf_counter() - t_pdf:.2f}s), "
+            f"mem={get_memory()}"
+        )
 
     print(
         f"[done] Total time: {time.perf_counter() - t0:.2f}s, "
